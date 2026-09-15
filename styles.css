@@ -171,6 +171,8 @@ ul, ol { list-style: none; }
   position: relative;
   z-index: 50;
   flex-shrink: 0;
+  pointer-events: none;
+  user-select: none;
 }
 
 .status-bar .time { font-variant-numeric: tabular-nums; }
@@ -1995,8 +1997,9 @@ ul, ol { list-style: none; }
   display: none;
   position: absolute;
   inset: 0;
+  padding-top: 44px;
   background: var(--bg);
-  z-index: 30;
+  z-index: 55;
   flex-direction: column;
   overflow: hidden;
 }
