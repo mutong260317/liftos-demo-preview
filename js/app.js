@@ -618,7 +618,7 @@ LiftOS.UI = (() => {
 
     if (workDone) {
       const work = W.workSetsOf(ex).filter((s) => s.completed);
-      const vol = work.reduce((a, s) => a + (s.weight || 0) * (s.reps || 0), 0);
+      const vol = work.reduce((a, s) => a + St.setVolume(s), 0);
       const lastVol = lastVolumeFor(ex.exerciseId);
       $("#doneExName").textContent = ex.name;
       $("#doneExSets").textContent = `${work.length} / ${work.length} 组完成`;
@@ -677,7 +677,7 @@ LiftOS.UI = (() => {
   function lastVolumeFor(exerciseId) {
     const rows = St.exerciseHistory(exerciseId);
     if (!rows.length) return 0;
-    return rows[0].sets.reduce((a, s) => a + (s.weight || 0) * (s.reps || 0), 0);
+    return rows[0].sets.reduce((a, s) => a + St.setVolume(s), 0);
   }
 
   function renderSetList() {
@@ -1027,7 +1027,7 @@ LiftOS.UI = (() => {
 
   function stepDuration(i, d) {
     const set = W.currentEx(state.session).sets[i];
-    set.durationSec = Math.max(0, (Number(set.durationSec) || 0) + d);
+    set.durationSec = Math.max(0, (Number(set.durationSec) || 0) + d;
     W.save(state.session);
     const el = $("#dDisplay");
     if (el) el.textContent = set.durationSec;
