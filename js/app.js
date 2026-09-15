@@ -348,12 +348,13 @@ LiftOS.UI = (() => {
           .map((pe, i) => {
             const m = LiftOS.getExercise(pe.exerciseId);
             return `<div class="plan-day-item">
-              <div class="idx">${i + 1}</div>
+              <div class="idx">${i + 1}${pe.supersetGroup ? "<br/>SS" : ""}</div>
               <div class="info" style="cursor:pointer" onclick="App.openPlanExEditor('${planId}',${i})">
-                <div class="name">${esc(m?.name || pe.exerciseId)}</div>
+                <div class="name">${esc(m?.name || pe.exerciseId)}${pe.supersetGroup ? ` <span class="badge-success">超级组</span>` : ""}</div>
                 <div class="sets">${pe.workSets} × ${pe.repMin}-${pe.repMax} · 休息 ${pe.restSeconds}s · RIR ${pe.targetRirMin}-${pe.targetRirMax}</div>
                 <div class="sets" style="color:var(--accent);font-weight:600">编辑参数</div>
               </div>
+              <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();App.togglePlanSuperset('${planId}',${i})">${pe.supersetGroup ? "解SS" : "组SS"}</button>
               <button class="icon-btn" aria-label="删除动作" onclick="event.stopPropagation();App.removePlanEx('${planId}',${i})">
                 <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
               </button>
@@ -643,8 +644,8 @@ LiftOS.UI = (() => {
       $("#nextExBtn").textContent = session.exIndex >= session.exercises.length - 1 ? "结束训练" : "下一动作";
     }
 
-    $("#exName").textContent = ex.name;
-    $("#exMuscle").textContent = ex.muscle;
+    $("#exName").textContent = ex.name + (ex.supersetGroup ? " · SS" : "");
+    $("#exMuscle").textContent = ex.muscle + (ex.supersetGroup ? " · 超级组" : "");
 
     const pe = ex.planExercise;
     const best = St.bestSet(ex.exerciseId);
@@ -1171,6 +1172,20 @@ LiftOS.UI = (() => {
     renderTraining();
   }
 
+  function togglePlanSuperset(planId, index) {
+    const plan = P.get(planId);
+    if (!plan) return;
+    if (plan.exercises[index]?.supersetGroup) {
+      P.unlinkPlanSuperset(planId, index);
+      showToast("已取消超级组");
+    } else {
+      const r = P.linkPlanSuperset(planId, index);
+      if (!r.ok) showToast(r.error || "无法链接");
+      else showToast("计划中已组成超级组");
+    }
+    openPlanDetail(planId);
+  }
+
   function renderWeeklyReview() {
     const el = $("#weeklyReviewCard");
     if (!el) return;
@@ -1186,8 +1201,43 @@ LiftOS.UI = (() => {
         <div class="bar-track"><div class="bar-fill" style="width:${w.volumeDelta == null ? 0 : Math.min(100, Math.abs(w.volumeDelta))}%"></div></div></div>
       <div class="muscle-row"><span class="name">PR</span><span class="count">${w.prs}</span>
         <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div></div>
+      ${Object.keys(w.muscleSets || {})
+        .slice(0, 8)
+        .map((k) => {
+          const n = w.muscleSets[k];
+          const label = LiftOS.MuscleLabels[k] || k;
+          const mx = Math.max(1, ...Object.values(w.muscleSets || {}));
+          return `<div class="muscle-row"><span class="name">${label}</span><span class="count">${n}组</span>
+            <div class="bar-track"><div class="bar-fill" style="width:${Math.round((n / mx) * 100)}%"></div></div></div>`;
+        })
+        .join("")}
       <p class="text-secondary mt-2" style="font-size:12px">目标 ${w.weeklyTarget} 次 · ${w.targetMet ? "已达成" : "未达成"}</p>
     `;
+  }
+
+  function renderTopExercises(session) {
+    const el = $("#summaryTopEx");
+    if (!el) return;
+    const fake = {
+      exercises: session.exercises
+        .filter((e) => !e.skipped)
+        .map((e) => ({
+          exerciseId: e.exerciseId,
+          name: e.name,
+          sets: e.sets.filter((s) => s.completed),
+        })),
+    };
+    const top = St.topExercises(fake, 3);
+    if (!top.length) {
+      el.innerHTML = `<p class="text-secondary" style="font-size:13px">暂无完成工作组</p>`;
+      return;
+    }
+    el.innerHTML = top
+      .map(
+        (t) => `<div class="muscle-row"><span class="name">${esc(t.name)}</span><span class="count">${t.workSets}组</span>
+          <div class="bar-track"><div class="bar-fill" style="width:${Math.min(100, t.workSets * 20)}%"></div></div></div>`
+      )
+      .join("");
   }
 
   function renderSummaryCompare(session) {
@@ -1196,6 +1246,7 @@ LiftOS.UI = (() => {
     const m = W.summaryModel(session);
     const fake = {
       id: session.id,
+      planId: session.planId,
       planName: session.planName,
       volume: m.volume,
       workSets: m.workSets,
@@ -1729,6 +1780,7 @@ LiftOS.UI = (() => {
     $("#sumPr").textContent = m.prs.length;
     $("#sumRir").textContent = m.avgRir == null ? "未记录" : m.avgRir;
     renderSummaryCompare(session);
+    renderTopExercises(session);
 
     const muscleOrder = ["chest", "front_delts", "side_delts", "triceps", "back", "quads", "biceps", "core"];
     const entries = muscleOrder.filter((k) => m.muscles[k]).map((k) => [k, m.muscles[k]]);
@@ -2519,8 +2571,10 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     toggleNotes,
     openWhySheet,
     toggleSuperset,
+    togglePlanSuperset,
     renderWeeklyReview,
     renderSummaryCompare,
+    renderTopExercises,
     adjustRest: (d) => {
       W.adjustRest(state.session, d);
       tickRest();

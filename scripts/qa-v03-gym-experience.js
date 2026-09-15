@@ -830,7 +830,7 @@ async function run() {
     );
     results.push(log("volumeOfHistory load-aware", analytics.volFall === 0, String(analytics.volFall)));
 
-    /* P1 superset */
+    /* P1 superset — cycle navigation covered in Round 4 block; keep link check */
     const ss = await page.evaluate(() => {
       localStorage.clear();
       localStorage.setItem("liftos.schemaVersion", "5");
@@ -839,41 +839,11 @@ async function run() {
       const s = LiftOS.Workout.createFromPlan(plan);
       LiftOS.Workout.linkSuperset(s);
       LiftOS.Storage.saveSession(s);
-      // complete last set of first exercise
-      let idx = LiftOS.Workout.activeSetIndex(s);
-      const ex = LiftOS.Workout.currentEx(s);
-      while (idx >= 0 && ex.sets[idx].type === "warmup") {
-        LiftOS.Workout.completeSet(s, idx, { weight: 10, reps: 12, rir: null });
-        LiftOS.Workout.clearRest(s);
-        idx = LiftOS.Workout.activeSetIndex(s);
-      }
-      let last;
-      while (idx >= 0) {
-        const st = ex.sets[idx];
-        if (st.reps == null) st.reps = 8;
-        last = LiftOS.Workout.completeSet(s, idx, { weight: st.weight || 20, reps: st.reps, rir: 1 });
-        idx = LiftOS.Workout.activeSetIndex(s);
-      }
       return {
-        group: ex.supersetGroup,
-        nextGroup: s.exercises[1]?.supersetGroup,
-        supersetSkip: last?.supersetSkip,
-        rest: s.rest,
-        linked: !!ex.supersetGroup && ex.supersetGroup === s.exercises[1]?.supersetGroup,
+        linked: !!s.exercises[0].supersetGroup && s.exercises[0].supersetGroup === s.exercises[1]?.supersetGroup,
       };
     });
-    results.push(
-      log(
-        "superset link + no rest between pair",
-        ss.linked && ss.supersetSkip === true && ss.rest === null,
-        JSON.stringify(ss)
-      )
-    );
-    // reload persist group
-    await page.evaluate(() => {
-      // ss already saved in that eval via saveSession before complete - re-save after
-      LiftOS.Storage.saveSession(App.state.session || LiftOS.Storage.getSession());
-    });
+    results.push(log("superset link works", ss.linked, JSON.stringify(ss)));
 
     /* P1 weekly review + summary compare */
     const wr = await page.evaluate(() => {
@@ -924,6 +894,186 @@ async function run() {
         JSON.stringify(wr.cmp)
       )
     );
+
+    /* ===== Round 4: real superset cycle + plan persist + UI ===== */
+    const ssPlan = await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "5");
+      LiftOS.Storage.ensureDefaults();
+      const plan = LiftOS.Plans.get("pushA");
+      // link first two exercises in PLAN
+      const r = LiftOS.Plans.linkPlanSuperset(plan.id, 0);
+      const saved = LiftOS.Plans.get(plan.id);
+      // start workout — group carried into session
+      const s = LiftOS.Workout.createFromPlan(saved);
+      const groups = s.exercises.slice(0, 2).map((e) => e.supersetGroup);
+      return { r, groups, planGroups: saved.exercises.slice(0, 2).map((e) => e.supersetGroup) };
+    });
+    results.push(
+      log(
+        "plan superset persists into session",
+        ssPlan.r.ok && ssPlan.groups[0] && ssPlan.groups[0] === ssPlan.groups[1] && ssPlan.planGroups[0] === ssPlan.groups[0],
+        JSON.stringify(ssPlan)
+      )
+    );
+
+    // A1 → B1 no rest, B1 → rest + A2
+    const cycle = await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "5");
+      LiftOS.Storage.ensureDefaults();
+      const plan = LiftOS.Plans.get("pushA");
+      // simplify: create session then force 2-work-set pair on first two exercises
+      LiftOS.Plans.linkPlanSuperset(plan.id, 0);
+      const s = LiftOS.Workout.createFromPlan(LiftOS.Plans.get("pushA"));
+      // strip to 2 work sets each for clarity
+      s.exercises.slice(0, 2).forEach((ex) => {
+        ex.sets = ex.sets.filter((x) => x.type !== "warmup").slice(0, 2);
+        LiftOS.Workout.renumberSets(ex);
+      });
+      s.exIndex = 0;
+      LiftOS.Storage.saveSession(s);
+      const names = [];
+      const rests = [];
+      function completeCurrent() {
+        const ex = LiftOS.Workout.currentEx(s);
+        const idx = LiftOS.Workout.activeSetIndex(s);
+        if (idx < 0) return false;
+        const st = ex.sets[idx];
+        if (st.reps == null) st.reps = 8;
+        const r = LiftOS.Workout.completeSet(s, idx, { weight: st.weight || 20, reps: 8, rir: 1 });
+        names.push(LiftOS.Workout.currentEx(s).name);
+        rests.push({ rest: !!s.rest, sec: r.restSeconds, nav: r.supersetNav?.movedTo || null });
+        LiftOS.Workout.clearRest(s);
+        return true;
+      }
+      // A1
+      completeCurrent();
+      // B1
+      completeCurrent();
+      // A2
+      completeCurrent();
+      // B2
+      completeCurrent();
+      return { names, rests, finalIdx: s.exIndex };
+    });
+    // After A1 → should be on second exercise (chest_press)
+    // After B1 → wrap to first with rest
+    results.push(
+      log(
+        "cycle A1 focuses B (partner)",
+        cycle.rests[0]?.sec === 0 && cycle.rests[0]?.nav && cycle.names[0] !== cycle.names[1],
+        JSON.stringify({ n: cycle.names, r: cycle.rests.slice(0, 2) })
+      )
+    );
+    results.push(
+      log(
+        "B1 wrap starts round rest",
+        cycle.rests[1]?.sec > 0 && cycle.rests[1]?.nav,
+        JSON.stringify(cycle.rests[1])
+      )
+    );
+    results.push(
+      log(
+        "A2 → B2 no rest",
+        cycle.rests[2]?.sec === 0 && cycle.rests[2]?.nav,
+        JSON.stringify(cycle.rests[2])
+      )
+    );
+
+    // reload persist group
+    const ssReload = await page.evaluate(() => {
+      const plan = LiftOS.Plans.get("pushA");
+      const s = LiftOS.Workout.createFromPlan(plan);
+      if (!s.exercises[0].supersetGroup) LiftOS.Workout.linkSuperset(s);
+      LiftOS.Storage.saveSession(s);
+      const before = LiftOS.Storage.getSession().exercises[0].supersetGroup;
+      return before;
+    });
+    await page.reload({ waitUntil: "load" });
+    await page.waitForTimeout(250);
+    const afterReload = await page.evaluate(() => LiftOS.Storage.getSession()?.exercises?.[0]?.supersetGroup);
+    results.push(log("superset survives reload", !!afterReload && afterReload === ssReload, `${ssReload}=${afterReload}`));
+
+    // planId compare isolation
+    const cmpIso = await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "5");
+      localStorage.setItem(
+        "liftos.history",
+        JSON.stringify([
+          { id: "h1", planId: "pA", planName: "PUSH", date: LiftOS.daysAgo(3), volume: 100, workSets: 1, exercises: [] },
+          { id: "h2", planId: "pB", planName: "PUSH", date: LiftOS.daysAgo(1), volume: 50, workSets: 1, exercises: [] },
+        ])
+      );
+      LiftOS.Storage.ensureDefaults();
+      const cmp = LiftOS.Stats.compareSameRoutine({ id: "live", planId: "pA", planName: "PUSH", volume: 120, workSets: 1 });
+      return cmp;
+    });
+    results.push(
+      log(
+        "compare uses planId not just name",
+        cmpIso && cmpIso.prevVolume === 100,
+        JSON.stringify(cmpIso)
+      )
+    );
+
+    // weekly review DOM muscles
+    await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "5");
+      localStorage.setItem(
+        "liftos.history",
+        JSON.stringify([
+          {
+            id: "w",
+            date: LiftOS.localDateKey(),
+            planName: "P",
+            volume: 500,
+            workSets: 4,
+            prs: 0,
+            exercises: [{ exerciseId: "incline", name: "上斜", sets: [{ type: "work", weight: 20, reps: 8, loadMode: "external" }] }],
+          },
+        ])
+      );
+      LiftOS.Storage.ensureDefaults();
+      App.nav("data");
+      App.renderWeeklyReview();
+    });
+    await page.waitForTimeout(150);
+    const wrHtml = await page.locator("#weeklyReviewCard").innerText();
+    results.push(log("weekly review shows muscle sets", /胸|组/.test(wrHtml), wrHtml.replace(/\n/g, " ").slice(0, 80)));
+
+    // top exercises DOM
+    await page.evaluate(() => {
+      const s = {
+        id: "t",
+        planName: "P",
+        planId: "p",
+        startTime: Date.now() - 3600000,
+        exercises: [
+          {
+            exerciseId: "incline",
+            name: "上斜哑铃卧推",
+            sets: [
+              { type: "work", completed: true, weight: 20, reps: 10, loadMode: "external" },
+              { type: "work", completed: true, weight: 20, reps: 9, loadMode: "external" },
+            ],
+          },
+          {
+            exerciseId: "lateral",
+            name: "侧平举",
+            sets: [{ type: "work", completed: true, weight: 10, reps: 12, loadMode: "external" }],
+          },
+        ],
+        prs: [],
+        exIndex: 0,
+      };
+      App.renderSummary(s);
+    });
+    await page.waitForTimeout(150);
+    const topHtml = await page.locator("#summaryTopEx").innerText();
+    results.push(log("summary shows top exercises", /上斜/.test(topHtml), topHtml.replace(/\n/g, " ").slice(0, 80)));
 
     await page.screenshot({ path: path.join(OUT, "final.png") });
   } catch (err) {

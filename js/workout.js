@@ -84,6 +84,7 @@ LiftOS.Workout = (() => {
           exerciseId: pe.exerciseId,
           name: master?.name || pe.exerciseId,
           muscle: master?.muscleLabel || "",
+          supersetGroup: pe.supersetGroup || undefined,
           planExercise: {
             workSets: pe.workSets,
             repMin: pe.repMin,
@@ -228,23 +229,36 @@ LiftOS.Workout = (() => {
       });
     }
 
-    // rest: skip on final work set of exercise OR when superset partner follows
+    // Rest / superset navigation after completing a set
     let restSec = 0;
-    const skipForSuperset = isLastWorkSetOfExercise(ex, setIdx) && isSupersetWithNext(session);
-    if (!isLastWorkSetOfExercise(ex, setIdx) && !skipForSuperset) {
+    let ssNav = null;
+    const inSuperset = !!ex.supersetGroup && (session.exercises || []).filter((e) => e.supersetGroup === ex.supersetGroup && !e.skipped).length >= 2;
+
+    if (inSuperset && S().isWork(set)) {
+      // Interleaved cycle: A1 → B1 → (rest) → A2 → B2
+      ssNav = supersetAdvance(session);
+      restSec = ssNav?.restSeconds || 0;
+      if (ssNav?.done) session.rest = null;
+    } else if (!isLastWorkSetOfExercise(ex, setIdx)) {
       restSec = ex.planExercise?.restSeconds || St().getPrefs().restDefault || 90;
       if (set.type === "warmup") restSec = Math.min(restSec, 60);
-      session.rest = {
-        duration: restSec,
-        endsAt: Date.now() + restSec * 1000,
-        startedAt: Date.now(),
-      };
+      session.rest = { duration: restSec, endsAt: Date.now() + restSec * 1000, startedAt: Date.now() };
     } else {
+      // final set of non-superset exercise → no rest
       session.rest = null;
+      restSec = 0;
     }
 
     save(session);
-    return { ok: true, prs: newPrs, restSeconds: restSec, set, skippedRest: restSec === 0, supersetSkip: skipForSuperset };
+    return {
+      ok: true,
+      prs: newPrs,
+      restSeconds: restSec,
+      set,
+      skippedRest: restSec === 0,
+      supersetSkip: !!(ssNav && restSec === 0 && !ssNav.done),
+      supersetNav: ssNav,
+    };
   }
 
   function undoSet(session, setIdx) {
@@ -367,6 +381,59 @@ LiftOS.Workout = (() => {
     ex.skipped = true;
     save(session);
     return nextExercise(session);
+  }
+
+  /**
+   * Superset cycle: after finishing a set on current exercise,
+   * if next partner in group has an incomplete set → focus it (no rest).
+   * If round completed (all members' next index done) → one rest, then first member with remaining sets.
+   */
+  function supersetAdvance(session) {
+    const ex = currentEx(session);
+    const group = ex?.supersetGroup;
+    if (!group) return null;
+    const members = session.exercises.filter((e) => e.supersetGroup === group && !e.skipped);
+    if (members.length < 2) return null;
+    const gi = members.indexOf(ex);
+    if (gi < 0) return null;
+
+    // Prefer next member in order
+    for (let k = 1; k <= members.length; k++) {
+      const nxt = members[(gi + k) % members.length];
+      if (nxt === ex && k === members.length) break;
+      const active = nxt.sets.findIndex((s) => !s.completed && S().isWork(s));
+      if (active < 0) continue;
+      // completing the later partner in the cycle → round rest before next round start
+      const isLaterPartner = (gi + k) % members.length > gi || k > 1;
+      // After B (later in pair) finishes a set, if A still has sets → rest then A
+      // After A finishes a set and B has sets → no rest, go B
+      let restSec = 0;
+      const willRest = isLaterPartner && k === 1; // moved to immediate next partner → no rest
+      // Determine: if we're wrapping back to an earlier member (next round) → rest
+      const wrapped = (gi + k) % members.length <= gi;
+      if (wrapped) {
+        restSec = ex.planExercise?.restSeconds || St().getPrefs().restDefault || 90;
+        session.rest = {
+          duration: restSec,
+          endsAt: Date.now() + restSec * 1000,
+          startedAt: Date.now(),
+        };
+      } else {
+        session.rest = null;
+        restSec = 0;
+      }
+      session.exIndex = session.exercises.indexOf(nxt);
+      save(session);
+      return { movedTo: nxt.name, exerciseId: nxt.exerciseId, restSeconds: restSec, wrapped };
+    }
+    session.rest = null;
+    save(session);
+    return { done: true };
+  }
+
+  function hasActiveSuperset(session) {
+    const ex = currentEx(session);
+    return !!(ex?.supersetGroup && isSupersetWithNext(session));
   }
 
   function nextExercise(session) {
@@ -700,6 +767,8 @@ LiftOS.Workout = (() => {
     linkSuperset,
     unlinkSuperset,
     isSupersetWithNext,
+    supersetAdvance,
+    hasActiveSuperset,
     startRest,
     adjustRest,
     clearRest,

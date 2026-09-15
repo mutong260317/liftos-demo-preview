@@ -456,15 +456,21 @@ LiftOS.Stats = (() => {
   /** Compare a finished entry to previous same planName workouts. */
   function compareSameRoutine(entry) {
     if (!entry) return null;
-    const hist = LiftOS.Storage.getHistory().filter((h) => h.id !== entry.id && h.planName === entry.planName);
+    const hist = LiftOS.Storage.getHistory().filter((h) => {
+      if (h.id === entry.id) return false;
+      if (entry.planId && h.planId) return h.planId === entry.planId;
+      if (!entry.planId || !h.planId) return h.planName === entry.planName;
+      return false;
+    });
     if (!hist.length) return null;
-    const prev = hist[0]; // most recent same routine (unshift order)
+    const prev = hist[0];
     const vol = entry.volume ?? 0;
     const prevVol = prev.volume ?? 0;
     const sets = entry.workSets ?? 0;
     const prevSets = prev.workSets ?? 0;
     return {
       planName: entry.planName,
+      planId: entry.planId || prev.planId || null,
       prevDate: prev.date,
       volume: vol,
       prevVolume: prevVol,
@@ -473,6 +479,23 @@ LiftOS.Stats = (() => {
       prevWorkSets: prevSets,
       setsDelta: sets - prevSets,
     };
+  }
+
+  /** Top exercises by work sets then load-aware volume (assisted mass excluded). */
+  function topExercises(entry, limit = 3) {
+    const rows = [];
+    (entry?.exercises || []).forEach((ex) => {
+      let workSets = 0;
+      let volume = 0;
+      (ex.sets || []).forEach((s) => {
+        if (!isWork(s)) return;
+        workSets += 1;
+        volume += setVolume(s);
+      });
+      if (workSets) rows.push({ exerciseId: ex.exerciseId, name: ex.name, workSets, volume: Math.round(volume) });
+    });
+    rows.sort((a, b) => b.workSets - a.workSets || b.volume - a.volume);
+    return rows.slice(0, limit);
   }
 
   /**
@@ -661,5 +684,6 @@ LiftOS.Stats = (() => {
     rebuildEntryPRs,
     weeklyReview,
     compareSameRoutine,
+    topExercises,
   };
 })();
