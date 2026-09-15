@@ -308,6 +308,145 @@ async function run() {
       return { prs: m.prs.length, types: m.prs.map((p) => p.type) };
     });
     results.push(log("summary uses session.prs", finishPr.prs >= 1, JSON.stringify(finishPr)));
+
+    // --- Review round 2: bodyweight Rep PR baseline ---
+    const bwPr = await page.evaluate(() => {
+      // seed history has pullup 8 and 7 at weight 0
+      const best = LiftOS.Stats.bestSet("pullup");
+      const prs = LiftOS.Stats.detectSetPRs(
+        "pullup",
+        { type: "work", completed: true, weight: 0, reps: 10 },
+        []
+      );
+      const noPr = LiftOS.Stats.detectSetPRs(
+        "pullup",
+        { type: "work", completed: true, weight: 0, reps: 8 },
+        []
+      );
+      const e1 = LiftOS.Stats.bestE1RM("pullup");
+      return { best, prs, noPr, e1 };
+    });
+    results.push(
+      log(
+        "bodyweight bestSet accepts weight=0",
+        bwPr.best && bwPr.best.weight === 0 && bwPr.best.reps === 8,
+        JSON.stringify(bwPr.best)
+      )
+    );
+    results.push(
+      log(
+        "bodyweight Rep PR 8→10 fires",
+        bwPr.prs.some((p) => p.type === "reps"),
+        JSON.stringify(bwPr.prs)
+      )
+    );
+    results.push(
+      log(
+        "bodyweight equal reps no PR",
+        bwPr.noPr.length === 0,
+        JSON.stringify(bwPr.noPr)
+      )
+    );
+    results.push(log("bodyweight e1RM stays null", bwPr.e1 === null, String(bwPr.e1)));
+
+    // live session pullup rep PR
+    const liveBw = await page.evaluate(() => {
+      const plan = LiftOS.Plans.get("pullA");
+      const s = LiftOS.Workout.createFromPlan(plan);
+      const idx = LiftOS.Workout.activeSetIndex(s);
+      const r = LiftOS.Workout.completeSet(s, idx, { weight: 0, reps: 10, rir: 1 });
+      return { prs: (r.prs || []).map((p) => p.type), session: (s.prs || []).map((p) => p.type) };
+    });
+    results.push(
+      log(
+        "live bodyweight 10 reps writes Rep PR",
+        liveBw.prs.includes("reps") && liveBw.session.includes("reps"),
+        JSON.stringify(liveBw)
+      )
+    );
+
+    // --- Review round 2: add-to-plan uses defaultParams ---
+    const addParams = await page.evaluate(() => {
+      const lateral = LiftOS.Plans.resolvePlanExerciseParams("lateral");
+      const crunch = LiftOS.Plans.resolvePlanExerciseParams("crunch");
+      const draftPe = { exerciseId: "lateral", ...lateral };
+      // simulate confirmAddToPlan draft push shape
+      const plan = LiftOS.Plans.create({ name: "TMP DEF", exercises: [] });
+      LiftOS.Plans.addExercise(plan.id, "lateral");
+      LiftOS.Plans.addExercise(plan.id, "crunch");
+      const saved = LiftOS.Plans.get(plan.id);
+      return {
+        lateral,
+        crunch,
+        draftPe,
+        savedLateral: saved.exercises[0],
+        savedCrunch: saved.exercises[1],
+      };
+    });
+    results.push(
+      log(
+        "resolve lateral 4x12-15 RIR rest60",
+        addParams.lateral.workSets === 4 &&
+          addParams.lateral.repMin === 12 &&
+          addParams.lateral.repMax === 15 &&
+          addParams.lateral.restSeconds === 60 &&
+          addParams.lateral.targetRirMin === 1 &&
+          addParams.lateral.targetRirMax === 2,
+        JSON.stringify(addParams.lateral)
+      )
+    );
+    results.push(
+      log(
+        "resolve crunch 4x15-20 rest60",
+        addParams.crunch.workSets === 4 && addParams.crunch.repMin === 15 && addParams.crunch.restSeconds === 60,
+        JSON.stringify(addParams.crunch)
+      )
+    );
+    results.push(
+      log(
+        "plan.addExercise uses master defaults",
+        addParams.savedLateral.workSets === 4 &&
+          addParams.savedLateral.repMin === 12 &&
+          addParams.savedLateral.restSeconds === 60 &&
+          addParams.savedLateral.targetRirMin === 1 &&
+          addParams.savedCrunch.repMin === 15,
+        JSON.stringify(addParams.savedLateral) + " | " + JSON.stringify(addParams.savedCrunch)
+      )
+    );
+    results.push(
+      log(
+        "draft entry has RIR not undefined",
+        Number.isFinite(addParams.draftPe.targetRirMin) && Number.isFinite(addParams.draftPe.targetRirMax),
+        JSON.stringify(addParams.draftPe)
+      )
+    );
+
+    // UI: create plan draft add lateral shows 12-15 not undefined RIR
+    await page.evaluate(() => {
+      LiftOS.Workout.abandon();
+      App.nav("plans");
+      App.openCreatePlan();
+      App.setLibraryMode("addToPlan");
+    });
+    await page.waitForTimeout(200);
+    await page.locator(".ex-card", { hasText: "哑铃侧平举" }).first().click();
+    await page.waitForTimeout(200);
+    const draftUi = await page.evaluate(() => App.state.draftPlan.exercises[0]);
+    results.push(
+      log(
+        "UI draft add lateral uses defaults",
+        draftUi &&
+          draftUi.workSets === 4 &&
+          draftUi.repMin === 12 &&
+          draftUi.repMax === 15 &&
+          draftUi.restSeconds === 60 &&
+          draftUi.targetRirMin === 1 &&
+          draftUi.targetRirMax === 2,
+        JSON.stringify(draftUi)
+      )
+    );
+    const draftHtml = await page.locator("#createPlanExList").innerText();
+    results.push(log("draft UI no undefined RIR", !/undefined/.test(draftHtml), draftHtml.replace(/\n/g, " ")));
   } catch (err) {
     results.push(log("suite error", false, err.message || String(err)));
     try {

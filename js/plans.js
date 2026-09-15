@@ -70,19 +70,35 @@ LiftOS.Plans = (() => {
     saveAll(plans);
   }
 
+  function resolvePlanExerciseParams(exerciseId, params = {}) {
+    const master = LiftOS.getExercise(exerciseId);
+    const d = master?.defaultParams || {
+      workSets: 3,
+      repMin: 8,
+      repMax: 12,
+      targetRirMin: 1,
+      targetRirMax: 2,
+      restSeconds: 90,
+    };
+    return {
+      workSets: params.workSets ?? d.workSets,
+      repMin: params.repMin ?? d.repMin,
+      repMax: params.repMax ?? d.repMax,
+      targetRirMin: params.targetRirMin ?? d.targetRirMin,
+      targetRirMax: params.targetRirMax ?? d.targetRirMax,
+      restSeconds: params.restSeconds ?? d.restSeconds,
+    };
+  }
+
   function addExercise(planId, exerciseId, params = {}) {
     const plan = get(planId);
     if (!plan) return null;
     const list = plan.exercises.slice();
+    const pe = resolvePlanExerciseParams(exerciseId, params);
     list.push({
       exerciseId,
       order: list.length,
-      workSets: params.workSets ?? 3,
-      repMin: params.repMin ?? 8,
-      repMax: params.repMax ?? 12,
-      targetRirMin: params.targetRirMin ?? 1,
-      targetRirMax: params.targetRirMax ?? 2,
-      restSeconds: params.restSeconds ?? 90,
+      ...pe,
       progressionRuleId: "double",
     });
     return update(planId, { exercises: list });
@@ -120,5 +136,5 @@ LiftOS.Plans = (() => {
     return [...set].join(" · ") || "力量训练";
   }
 
-  return { all, get, create, update, remove, addExercise, removeExercise, planStats, estimateMinutes, muscleLabelFromPlan };
+  return { all, get, create, update, remove, addExercise, removeExercise, resolvePlanExerciseParams, planStats, estimateMinutes, muscleLabelFromPlan };
 })();

@@ -1193,16 +1193,11 @@ LiftOS.UI = (() => {
 
   function confirmAddToPlan(exerciseId) {
     const master = LiftOS.getExercise(exerciseId);
-    if (state.draftPlan && !$("#subpage-create-plan").classList.contains("active") === false) {
-      // editing draft via create plan
-    }
+    const pe = P.resolvePlanExerciseParams(exerciseId);
     if (state.draftPlan && $("#subpage-create-plan").classList.contains("active")) {
       state.draftPlan.exercises.push({
         exerciseId,
-        workSets: 3,
-        repMin: 8,
-        repMax: 12,
-        restSeconds: 90,
+        ...pe,
       });
       closeSubpage("subpage-library");
       state.libraryMode = "browse";
@@ -1211,7 +1206,7 @@ LiftOS.UI = (() => {
       return;
     }
     if (state.editingPlanId) {
-      P.addExercise(state.editingPlanId, exerciseId, { workSets: 3, repMin: 8, repMax: 12, restSeconds: 90 });
+      P.addExercise(state.editingPlanId, exerciseId, pe);
       closeSubpage("subpage-library");
       state.libraryMode = "browse";
       openPlanDetail(state.editingPlanId);

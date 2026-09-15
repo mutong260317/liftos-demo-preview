@@ -120,10 +120,14 @@ LiftOS.Stats = (() => {
 
   function bestSet(exerciseId, extraSessions = []) {
     const rows = exerciseHistory(exerciseId, extraSessions);
+    const isBW = LiftOS.isBodyweight(exerciseId);
     let best = null;
     rows.forEach((r) => {
       r.sets.forEach((s) => {
-        if (!s.weight || !s.reps) return;
+        if (s.reps == null || s.reps <= 0) return;
+        // bodyweight allows weight=0; loaded lifts require positive weight
+        if (s.weight == null || (!isBW && s.weight <= 0)) return;
+        if (isBW && s.weight < 0) return;
         if (!best || s.weight > best.weight || (s.weight === best.weight && s.reps > best.reps)) {
           best = { weight: s.weight, reps: s.reps, date: r.date };
         }
@@ -135,11 +139,12 @@ LiftOS.Stats = (() => {
   function bestE1RM(exerciseId, extraSessions = []) {
     const master = LiftOS.getExercise(exerciseId);
     if (master && master.supportsE1RM === false) return null;
+    if (master && master.equipment === "bodyweight") return null;
     const rows = exerciseHistory(exerciseId, extraSessions);
     let best = null;
     rows.forEach((r) => {
       r.sets.forEach((s) => {
-        if (!s.weight || !s.reps) return;
+        if (s.reps == null || s.reps <= 0 || s.weight == null || s.weight <= 0) return;
         const conf = e1RMConfidence(s.reps);
         if (conf < 0.5) return;
         const val = e1RM(s.weight, s.reps);
