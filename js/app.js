@@ -257,7 +257,12 @@ LiftOS.UI = (() => {
 
   function volumeOfHistory(h) {
     let v = 0;
-    (h.exercises || []).forEach((ex) => (ex.sets || []).forEach((s) => (v += (s.weight || 0) * (s.reps || 0))));
+    (h.exercises || []).forEach((ex) =>
+      (ex.sets || []).forEach((s) => {
+        if (!LiftOS.Stats.isWork(s)) return;
+        v += LiftOS.Stats.setVolume(s);
+      })
+    );
     return v;
   }
 
@@ -1151,6 +1156,69 @@ LiftOS.UI = (() => {
     return true;
   }
 
+  function toggleSuperset() {
+    if (!state.session) return;
+    const a = W.currentEx(state.session);
+    if (a?.supersetGroup) {
+      W.unlinkSuperset(state.session);
+      showToast("已取消超级组");
+      renderTraining();
+      return;
+    }
+    const r = W.linkSuperset(state.session);
+    if (!r.ok) showToast(r.error || "无法链接");
+    else showToast("已与下一动作组成超级组");
+    renderTraining();
+  }
+
+  function renderWeeklyReview() {
+    const el = $("#weeklyReviewCard");
+    if (!el) return;
+    const w = St.weeklyReview();
+    el.innerHTML = `
+      <div class="muscle-row"><span class="name">本周</span><span class="count">${w.sessions}次</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${Math.min(100, (w.sessions / Math.max(1, w.weeklyTarget)) * 100)}%"></div></div></div>
+      <div class="muscle-row"><span class="name">工作组</span><span class="count">${w.workSets}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div></div>
+      <div class="muscle-row"><span class="name">容量</span><span class="count">${w.volume.toLocaleString()}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div></div>
+      <div class="muscle-row"><span class="name">容量Δ</span><span class="count">${w.volumeDelta == null ? "—" : (w.volumeDelta >= 0 ? "↑" : "↓") + Math.abs(w.volumeDelta) + "%"}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${w.volumeDelta == null ? 0 : Math.min(100, Math.abs(w.volumeDelta))}%"></div></div></div>
+      <div class="muscle-row"><span class="name">PR</span><span class="count">${w.prs}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div></div>
+      <p class="text-secondary mt-2" style="font-size:12px">目标 ${w.weeklyTarget} 次 · ${w.targetMet ? "已达成" : "未达成"}</p>
+    `;
+  }
+
+  function renderSummaryCompare(session) {
+    const el = $("#summaryCompare");
+    if (!el) return;
+    const m = W.summaryModel(session);
+    const fake = {
+      id: session.id,
+      planName: session.planName,
+      volume: m.volume,
+      workSets: m.workSets,
+      date: LiftOS.localDateKey(),
+    };
+    const cmp = St.compareSameRoutine(fake);
+    if (!cmp) {
+      el.innerHTML = `<p class="text-secondary" style="font-size:13px">暂无同计划历史可对比</p>`;
+      return;
+    }
+    el.innerHTML = `
+      <div class="muscle-row"><span class="name">容量</span><span class="count">${cmp.volume.toLocaleString()}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${cmp.prevVolume ? Math.min(100, (cmp.volume / cmp.prevVolume) * 50) : 50}%"></div></div></div>
+      <div class="muscle-row"><span class="name">上次</span><span class="count">${cmp.prevVolume.toLocaleString()}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:50%"></div></div></div>
+      <div class="muscle-row"><span class="name">工作组</span><span class="count">${cmp.workSets} → 上次 ${cmp.prevWorkSets}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${cmp.prevWorkSets ? Math.min(100, (cmp.workSets / cmp.prevWorkSets) * 50) : 50}%"></div></div></div>
+      <p class="text-secondary mt-2" style="font-size:12px">${esc(cmp.planName)} · 上次 ${esc(cmp.prevDate)}${
+        cmp.volumeDeltaPct == null ? "" : ` · 容量 ${cmp.volumeDeltaPct >= 0 ? "↑" : "↓"}${Math.abs(cmp.volumeDeltaPct)}%`
+      }</p>
+    `;
+  }
+
   function openWarmupCalc() {
     const ex = W.currentEx(state.session);
     if (!ex) return;
@@ -1324,9 +1392,71 @@ LiftOS.UI = (() => {
   }
 
   function reopenHistoryEditor() {
-    // draft discarded — reopen stored entry
-    state.historyDraft = null;
+    // Restore preserved draft so 返回编辑 / delete-cancel keeps unsaved edits
+    if (state.historyDraft) {
+      openOverlay("");
+      renderHistoryEditorFromEntry(state.historyDraft);
+      return;
+    }
     openHistoryDetail(state.editingHistoryId);
+  }
+
+  function discardHistoryDraft() {
+    state.historyDraft = null;
+    closeOverlay();
+  }
+
+  function renderHistoryEditorFromEntry(entry) {
+    if (!entry) return;
+    state.editingHistoryId = entry.id;
+    const rows = [];
+    (entry.exercises || []).forEach((ex, ei) => {
+      (ex.sets || []).forEach((s, si) => {
+        rows.push({ ei, si, ex, s });
+      });
+    });
+    openOverlay(`
+      <div class="sheet" onclick="event.stopPropagation()">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <h3>修正历史 · ${esc(entry.planName || entry.date)}${state.historyDraft ? " · 未保存草稿" : ""}</h3>
+          <button class="btn btn-ghost btn-sm" onclick="App.discardHistoryDraft()">关闭</button>
+        </div>
+        <div class="sheet-body">
+          ${rows
+            .map(({ ei, si, ex, s }) => {
+              const isDur = !!LiftOS.isDurationExercise?.(ex.exerciseId);
+              return `
+            <div class="plan-day-item">
+              <div class="info">
+                <div class="name">${esc(ex.name)}</div>
+                <div class="sets">
+                  类型
+                  <select class="form-input" style="width:90px;height:36px;display:inline-block" data-h="type" data-ei="${ei}" data-si="${si}">
+                    ${["work", "warmup", "drop", "failure", "amrap"].map((t) => `<option value="${t}" ${s.type === t ? "selected" : ""}>${t}</option>`).join("")}
+                  </select>
+                  负荷
+                  <select class="form-input" style="width:110px;height:36px;display:inline-block" data-h="loadMode" data-ei="${ei}" data-si="${si}">
+                    ${["external", "bodyweight", "added_weight", "assisted"].map((m) => `<option value="${m}" ${(s.loadMode || "external") === m ? "selected" : ""}>${m}</option>`).join("")}
+                  </select>
+                </div>
+                <div class="sets mt-1">
+                  ${isDur
+                    ? `秒 <input class="form-input" style="width:64px;height:36px;display:inline-block" data-h="durationSec" data-ei="${ei}" data-si="${si}" value="${s.durationSec ?? ""}" />`
+                    : `W <input class="form-input" style="width:64px;height:36px;display:inline-block" data-h="w" data-ei="${ei}" data-si="${si}" value="${s.weight ?? ""}" />
+                       R <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="r" data-ei="${ei}" data-si="${si}" value="${s.reps ?? ""}" />
+                       RIR <input class="form-input" style="width:48px;height:36px;display:inline-block" data-h="rir" data-ei="${ei}" data-si="${si}" value="${s.rir ?? ""}" />
+                       辅助 <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="assist" data-ei="${ei}" data-si="${si}" value="${s.assistanceKg ?? ""}" />
+                       附加 <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="added" data-ei="${ei}" data-si="${si}" value="${s.addedWeightKg ?? ""}" />`}
+                </div>
+              </div>
+              <button class="btn btn-ghost btn-sm" onclick="App.confirmDeleteHistorySet(${ei},${si})">删</button>
+            </div>`;
+            })
+            .join("")}
+          <button class="btn btn-primary btn-block mt-3" onclick="App.confirmSaveHistoryCorrection()">保存修正</button>
+        </div>
+      </div>`);
   }
 
   function confirmDeleteHistorySet(ei, si) {
@@ -1598,6 +1728,7 @@ LiftOS.UI = (() => {
     $("#sumVol").textContent = m.volume.toLocaleString();
     $("#sumPr").textContent = m.prs.length;
     $("#sumRir").textContent = m.avgRir == null ? "未记录" : m.avgRir;
+    renderSummaryCompare(session);
 
     const muscleOrder = ["chest", "front_delts", "side_delts", "triceps", "back", "quads", "biceps", "core"];
     const entries = muscleOrder.filter((k) => m.muscles[k]).map((k) => [k, m.muscles[k]]);
@@ -1838,6 +1969,7 @@ LiftOS.UI = (() => {
 
   /* ---------- DATA ---------- */
   function renderData() {
+    renderWeeklyReview();
     const range = state.dataRange;
     const allHistory = S.getHistory();
     const emptyBox = $("#dataEmpty");
@@ -2386,6 +2518,9 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     setFeeling,
     toggleNotes,
     openWhySheet,
+    toggleSuperset,
+    renderWeeklyReview,
+    renderSummaryCompare,
     adjustRest: (d) => {
       W.adjustRest(state.session, d);
       tickRest();
@@ -2416,6 +2551,8 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     saveHistoryCorrection,
     confirmSaveHistoryCorrection,
     reopenHistoryEditor,
+    discardHistoryDraft,
+    renderHistoryEditorFromEntry,
     collectHistoryDraftFromForm,
     confirmDeleteHistorySet,
     deleteHistorySet,

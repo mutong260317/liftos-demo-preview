@@ -50,6 +50,13 @@ LiftOS.Workout = (() => {
     return workIdxs[workIdxs.length - 1].i === setIdx;
   }
 
+  function isSupersetWithNext(session) {
+    const ex = currentEx(session);
+    if (!ex?.supersetGroup) return false;
+    const next = session.exercises[session.exIndex + 1];
+    return !!(next && next.supersetGroup === ex.supersetGroup && !next.skipped);
+  }
+
   /** Build a fresh session from a real plan. */
   function createFromPlan(plan) {
     if (!plan || !plan.exercises?.length) throw new Error("empty plan");
@@ -221,9 +228,10 @@ LiftOS.Workout = (() => {
       });
     }
 
-    // rest: skip on final work set of exercise
+    // rest: skip on final work set of exercise OR when superset partner follows
     let restSec = 0;
-    if (!isLastWorkSetOfExercise(ex, setIdx)) {
+    const skipForSuperset = isLastWorkSetOfExercise(ex, setIdx) && isSupersetWithNext(session);
+    if (!isLastWorkSetOfExercise(ex, setIdx) && !skipForSuperset) {
       restSec = ex.planExercise?.restSeconds || St().getPrefs().restDefault || 90;
       if (set.type === "warmup") restSec = Math.min(restSec, 60);
       session.rest = {
@@ -236,7 +244,7 @@ LiftOS.Workout = (() => {
     }
 
     save(session);
-    return { ok: true, prs: newPrs, restSeconds: restSec, set, skippedRest: restSec === 0 };
+    return { ok: true, prs: newPrs, restSeconds: restSec, set, skippedRest: restSec === 0, supersetSkip: skipForSuperset };
   }
 
   function undoSet(session, setIdx) {
@@ -365,6 +373,30 @@ LiftOS.Workout = (() => {
     if (session.exIndex >= session.exercises.length - 1) return false;
     session.exIndex += 1;
     session.rest = null;
+    save(session);
+    return true;
+  }
+
+  /** Link current exercise with the next one as a superset pair. */
+  function linkSuperset(session) {
+    const i = session.exIndex;
+    const a = session.exercises[i];
+    const b = session.exercises[i + 1];
+    if (!a || !b) return { ok: false, error: "没有下一个动作" };
+    const gid = a.supersetGroup || b.supersetGroup || `ss_${uid("g")}`;
+    a.supersetGroup = gid;
+    b.supersetGroup = gid;
+    save(session);
+    return { ok: true, group: gid };
+  }
+
+  function unlinkSuperset(session) {
+    const a = session.exercises[session.exIndex];
+    if (!a?.supersetGroup) return false;
+    const gid = a.supersetGroup;
+    session.exercises.forEach((ex) => {
+      if (ex.supersetGroup === gid) delete ex.supersetGroup;
+    });
     save(session);
     return true;
   }
@@ -665,6 +697,9 @@ LiftOS.Workout = (() => {
     replaceExercise,
     skipExercise,
     nextExercise,
+    linkSuperset,
+    unlinkSuperset,
+    isSupersetWithNext,
     startRest,
     adjustRest,
     clearRest,

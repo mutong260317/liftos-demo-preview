@@ -285,16 +285,28 @@ LiftOS.Stats = (() => {
       minutes += h.durationMinutes || estimateMinutes(h);
       (h.exercises || []).forEach((ex) => {
         const id = ex.exerciseId;
-        if (!byExercise[id]) byExercise[id] = { weight: 0, reps: 0, e1rm: 0, volume: 0 };
+        if (!byExercise[id]) byExercise[id] = { weight: 0, reps: 0, e1rm: 0, volume: 0, assisted: 0 };
         (ex.sets || []).forEach((s) => {
           if (!isWork(s)) return;
           volume += setVolume(s);
           workSets += 1;
-          if (s.weight > byExercise[id].weight) byExercise[id].weight = s.weight;
-          if (s.reps > byExercise[id].reps) byExercise[id].reps = s.reps;
-          const e = e1RM(s.weight, s.reps);
-          if (e && e > byExercise[id].e1rm) byExercise[id].e1rm = e;
           byExercise[id].volume += setVolume(s);
+          if (s.loadMode === "assisted") {
+            // never treat assistance as positive strength load
+            byExercise[id].assisted += 1;
+            if (s.reps > byExercise[id].reps) byExercise[id].reps = s.reps;
+            return;
+          }
+          const load =
+            s.loadMode === "added_weight"
+              ? Number(s.addedWeightKg) || Number(s.weight) || 0
+              : Number(s.weight) || 0;
+          if (load > byExercise[id].weight) byExercise[id].weight = load;
+          if (s.reps > byExercise[id].reps) byExercise[id].reps = s.reps;
+          if (s.loadMode !== "bodyweight" && masterSupportsE1RM(id)) {
+            const e = e1RM(load, s.reps);
+            if (e && e > byExercise[id].e1rm) byExercise[id].e1rm = e;
+          }
         });
       });
       if (h.prs) prs += h.prs;
@@ -310,6 +322,12 @@ LiftOS.Stats = (() => {
       rows,
       byExercise,
     };
+  }
+
+  function masterSupportsE1RM(exerciseId) {
+    const m = LiftOS.getExercise(exerciseId);
+    if (!m) return true;
+    return m.supportsE1RM !== false && m.equipment !== "bodyweight" && m.metricType !== "duration";
   }
 
   function estimateMinutes(h) {
@@ -350,20 +368,111 @@ LiftOS.Stats = (() => {
       .slice()
       .reverse();
     const master = LiftOS.getExercise(exerciseId);
-    if (master && master.supportsE1RM === false) {
+    if (master && (master.supportsE1RM === false || master.equipment === "bodyweight" || master.metricType === "duration")) {
+      // For BW/assisted-dominant movements: trend is max non-assisted load (added weight), else 0.
+      // More assistance must NOT rise the series.
       return rows.map((r) => {
-        const bestW = Math.max(0, ...r.sets.map((s) => s.weight || 0));
-        return { date: r.date, value: bestW };
+        const loads = r.sets
+          .filter((s) => s.loadMode !== "assisted")
+          .map((s) => {
+            if (s.loadMode === "added_weight") return Number(s.addedWeightKg) || Number(s.weight) || 0;
+            if (s.loadMode === "bodyweight") return 0;
+            return Number(s.weight) || 0;
+          });
+        return { date: r.date, value: loads.length ? Math.max(0, ...loads) : 0 };
       });
     }
     return rows.map((r) => {
       let best = 0;
       r.sets.forEach((s) => {
-        const e = e1RM(s.weight, s.reps);
+        if (s.loadMode === "assisted" || s.loadMode === "bodyweight") return;
+        const load =
+          s.loadMode === "added_weight"
+            ? Number(s.addedWeightKg) || Number(s.weight) || 0
+            : Number(s.weight) || 0;
+        const e = e1RM(load, s.reps);
         if (e && e > best) best = e;
       });
       return { date: r.date, value: best };
     });
+  }
+
+  /** Weekly local review from real history only. */
+  function weeklyReview(from = new Date()) {
+    const prefs = LiftOS.Storage.getPrefs() || {};
+    const target = prefs.weeklyTarget || 5;
+    const day = from.getDay();
+    const mondayOffset = day === 0 ? 6 : day - 1;
+    const monday = new Date(from.getFullYear(), from.getMonth(), from.getDate() - mondayOffset);
+    const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
+    const start = LiftOS.localDateKey(monday);
+    const end = LiftOS.localDateKey(sunday);
+    const prevMonday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() - 7);
+    const prevEnd = LiftOS.localDateKey(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() - 1));
+
+    const hist = LiftOS.Storage.getHistory();
+    const thisWeek = hist.filter((h) => h.date >= start && h.date <= end);
+    const prevWeek = hist.filter((h) => h.date >= LiftOS.localDateKey(prevMonday) && h.date <= prevEnd);
+
+    const sumRange = (rows) => {
+      let volume = 0;
+      let workSets = 0;
+      let prs = 0;
+      rows.forEach((h) => {
+        volume += h.volume != null ? h.volume : (h.exercises || []).reduce((a, ex) => a + (ex.sets || []).reduce((b, s) => b + setVolume(s), 0), 0);
+        workSets += h.workSets != null ? h.workSets : (h.exercises || []).reduce((a, ex) => a + (ex.sets || []).filter(isWork).length, 0);
+        prs += h.prs || 0;
+      });
+      return { volume: Math.round(volume), workSets, prs };
+    };
+
+    const mus = {};
+    thisWeek.forEach((h) => {
+      (h.exercises || []).forEach((ex) => {
+        const m = LiftOS.getExercise(ex.exerciseId);
+        (m?.primaryMuscles || []).forEach((k) => {
+          mus[k] = (mus[k] || 0) + (ex.sets || []).filter(isWork).length;
+        });
+      });
+    });
+
+    const cur = sumRange(thisWeek);
+    const prev = sumRange(prevWeek);
+    return {
+      start,
+      end,
+      sessions: thisWeek.length,
+      workSets: cur.workSets,
+      volume: cur.volume,
+      prevVolume: prev.volume,
+      volumeDelta: prev.volume ? Math.round(((cur.volume - prev.volume) / prev.volume) * 1000) / 10 : null,
+      prs: cur.prs,
+      muscleSets: mus,
+      weeklyTarget: target,
+      targetMet: thisWeek.length >= target,
+    };
+  }
+
+  /** Compare a finished entry to previous same planName workouts. */
+  function compareSameRoutine(entry) {
+    if (!entry) return null;
+    const hist = LiftOS.Storage.getHistory().filter((h) => h.id !== entry.id && h.planName === entry.planName);
+    if (!hist.length) return null;
+    const prev = hist[0]; // most recent same routine (unshift order)
+    const vol = entry.volume ?? 0;
+    const prevVol = prev.volume ?? 0;
+    const sets = entry.workSets ?? 0;
+    const prevSets = prev.workSets ?? 0;
+    return {
+      planName: entry.planName,
+      prevDate: prev.date,
+      volume: vol,
+      prevVolume: prevVol,
+      volumeDeltaPct: prevVol ? Math.round(((vol - prevVol) / prevVol) * 1000) / 10 : null,
+      workSets: sets,
+      prevWorkSets: prevSets,
+      setsDelta: sets - prevSets,
+    };
   }
 
   /**
@@ -550,5 +659,7 @@ LiftOS.Stats = (() => {
     assistedDominates,
     assistedImprovement,
     rebuildEntryPRs,
+    weeklyReview,
+    compareSameRoutine,
   };
 })();

@@ -736,6 +736,195 @@ async function run() {
     results.push(log("28x10 dominates priors", pareto.imp28 === "pr", JSON.stringify(pareto)));
     results.push(log("35x4 dominated not PR", pareto.imp35x4 === false, JSON.stringify(pareto)));
 
+    /* ===== Round 3 P0-1 draft restore ===== */
+    await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "5");
+      localStorage.setItem(
+        "liftos.history",
+        JSON.stringify([
+          {
+            id: "ws_draft",
+            date: LiftOS.localDateKey(),
+            planName: "PUSH A",
+            volume: 200,
+            workSets: 1,
+            prs: 0,
+            exercises: [
+              { exerciseId: "incline", name: "上斜", sets: [{ type: "work", weight: 20, reps: 10, rir: 2, loadMode: "external" }] },
+            ],
+          },
+        ])
+      );
+      LiftOS.Storage.ensureDefaults();
+      App.nav("data");
+      App.openHistoryDetail("ws_draft");
+    });
+    await page.waitForTimeout(200);
+    await page.locator('[data-h="r"]').first().fill("14");
+    await page.evaluate(() => App.confirmSaveHistoryCorrection());
+    await page.waitForTimeout(100);
+    await page.evaluate(() => App.reopenHistoryEditor());
+    await page.waitForTimeout(200);
+    const restored = await page.locator('[data-h="r"]').first().inputValue();
+    const storedReps = await page.evaluate(() => LiftOS.Storage.getHistory().find((h) => h.id === "ws_draft").exercises[0].sets[0].reps);
+    results.push(log("返回编辑 keeps unsaved draft", restored === "14" && storedReps === 10, `ui=${restored} stored=${storedReps}`));
+    // delete cancel keeps draft
+    await page.evaluate(() => App.confirmDeleteHistorySet(0, 0));
+    await page.waitForTimeout(100);
+    await page.evaluate(() => App.reopenHistoryEditor());
+    await page.waitForTimeout(150);
+    const restored2 = await page.locator('[data-h="r"]').first().inputValue();
+    results.push(log("delete cancel keeps draft", restored2 === "14", restored2));
+
+    /* Round 3 P0-2 assisted analytics */
+    const analytics = await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "5");
+      localStorage.setItem(
+        "liftos.history",
+        JSON.stringify([
+          {
+            id: "ws_a",
+            date: LiftOS.daysAgo(10),
+            planName: "P",
+            volume: 0,
+            workSets: 1,
+            exercises: [
+              { exerciseId: "pullup", name: "引体", sets: [{ type: "work", weight: 40, reps: 8, rir: 1, loadMode: "assisted", assistanceKg: 40 }] },
+            ],
+          },
+          {
+            id: "ws_b",
+            date: LiftOS.daysAgo(2),
+            planName: "P",
+            volume: 0,
+            workSets: 1,
+            exercises: [
+              { exerciseId: "pullup", name: "引体", sets: [{ type: "work", weight: 35, reps: 8, rir: 1, loadMode: "assisted", assistanceKg: 35 }] },
+            ],
+          },
+        ])
+      );
+      LiftOS.Storage.ensureDefaults();
+      const series = LiftOS.Stats.e1rmSeries("pullup", [], "all");
+      const sum = LiftOS.Stats.summarizeHistory("all");
+      const volFall = LiftOS.Storage.getHistory().reduce((a, h) => {
+        return a + (h.exercises || []).reduce((b, ex) => b + (ex.sets || []).reduce((c, s) => c + LiftOS.Stats.setVolume(s), 0), 0);
+      }, 0);
+      return { series, pullup: sum.byExercise.pullup, volFall, sumVolume: sum.volume };
+    });
+    results.push(
+      log(
+        "assisted trend not rising on less assist",
+        analytics.series.every((p) => p.value === 0),
+        JSON.stringify(analytics.series)
+      )
+    );
+    results.push(
+      log(
+        "summarizeHistory no assist as strength weight",
+        (analytics.pullup?.weight || 0) === 0 && (analytics.pullup?.e1rm || 0) === 0 && analytics.sumVolume === 0,
+        JSON.stringify(analytics.pullup) + " vol=" + analytics.sumVolume
+      )
+    );
+    results.push(log("volumeOfHistory load-aware", analytics.volFall === 0, String(analytics.volFall)));
+
+    /* P1 superset */
+    const ss = await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "5");
+      LiftOS.Storage.ensureDefaults();
+      const plan = LiftOS.Plans.get("pushA");
+      const s = LiftOS.Workout.createFromPlan(plan);
+      LiftOS.Workout.linkSuperset(s);
+      LiftOS.Storage.saveSession(s);
+      // complete last set of first exercise
+      let idx = LiftOS.Workout.activeSetIndex(s);
+      const ex = LiftOS.Workout.currentEx(s);
+      while (idx >= 0 && ex.sets[idx].type === "warmup") {
+        LiftOS.Workout.completeSet(s, idx, { weight: 10, reps: 12, rir: null });
+        LiftOS.Workout.clearRest(s);
+        idx = LiftOS.Workout.activeSetIndex(s);
+      }
+      let last;
+      while (idx >= 0) {
+        const st = ex.sets[idx];
+        if (st.reps == null) st.reps = 8;
+        last = LiftOS.Workout.completeSet(s, idx, { weight: st.weight || 20, reps: st.reps, rir: 1 });
+        idx = LiftOS.Workout.activeSetIndex(s);
+      }
+      return {
+        group: ex.supersetGroup,
+        nextGroup: s.exercises[1]?.supersetGroup,
+        supersetSkip: last?.supersetSkip,
+        rest: s.rest,
+        linked: !!ex.supersetGroup && ex.supersetGroup === s.exercises[1]?.supersetGroup,
+      };
+    });
+    results.push(
+      log(
+        "superset link + no rest between pair",
+        ss.linked && ss.supersetSkip === true && ss.rest === null,
+        JSON.stringify(ss)
+      )
+    );
+    // reload persist group
+    await page.evaluate(() => {
+      // ss already saved in that eval via saveSession before complete - re-save after
+      LiftOS.Storage.saveSession(App.state.session || LiftOS.Storage.getSession());
+    });
+
+    /* P1 weekly review + summary compare */
+    const wr = await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "5");
+      const today = LiftOS.localDateKey();
+      localStorage.setItem(
+        "liftos.history",
+        JSON.stringify([
+          {
+            id: "ws_w1",
+            date: today,
+            planName: "PUSH A",
+            volume: 1000,
+            workSets: 10,
+            prs: 2,
+            exercises: [
+              { exerciseId: "incline", name: "上斜", sets: [{ type: "work", weight: 20, reps: 10, rir: 1, loadMode: "external" }] },
+            ],
+          },
+          {
+            id: "ws_w0",
+            date: LiftOS.daysAgo(7),
+            planName: "PUSH A",
+            volume: 800,
+            workSets: 8,
+            prs: 0,
+            exercises: [],
+          },
+        ])
+      );
+      LiftOS.Storage.ensureDefaults();
+      const w = LiftOS.Stats.weeklyReview();
+      const cmp = LiftOS.Stats.compareSameRoutine({ id: "ws_w1", planName: "PUSH A", volume: 1000, workSets: 10, date: today });
+      return { w, cmp };
+    });
+    results.push(
+      log(
+        "weekly review real local data",
+        wr.w.sessions >= 1 && wr.w.volume >= 1000 && wr.w.prs >= 2 && wr.w.weeklyTarget === 5,
+        JSON.stringify(wr.w)
+      )
+    );
+    results.push(
+      log(
+        "summary compare vs previous same routine",
+        wr.cmp && wr.cmp.prevVolume === 800 && wr.cmp.volumeDeltaPct === 25,
+        JSON.stringify(wr.cmp)
+      )
+    );
+
     await page.screenshot({ path: path.join(OUT, "final.png") });
   } catch (err) {
     results.push(log("suite error", false, err.message || String(err)));

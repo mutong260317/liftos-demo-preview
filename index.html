@@ -161,6 +161,11 @@
           </div>
 
           <div class="section">
+            <div class="section-title">本周回顾 <span class="link">本地数据</span></div>
+            <div class="card" id="weeklyReviewCard"></div>
+          </div>
+
+          <div class="section">
             <div class="section-title">训练历史 <span class="link">可修正</span></div>
             <div id="dataHistoryList"></div>
           </div>
@@ -281,6 +286,7 @@
           <div class="training-actions">
             <button class="btn btn-secondary btn-sm" onclick="App.openWarmupCalc()">热身计算</button>
             <button class="btn btn-secondary btn-sm" onclick="App.openPlateCalc()">杠铃片</button>
+            <button class="btn btn-secondary btn-sm" onclick="App.toggleSuperset()">超级组</button>
           </div>
         </div>
 
@@ -312,6 +318,10 @@
           <div class="cell"><div class="k">平均 RIR</div><div class="v" id="sumRir">未记录</div></div>
         </div>
         <div class="content mt-4">
+          <div class="section">
+            <div class="section-title">与上次对比</div>
+            <div class="card" id="summaryCompare"></div>
+          </div>
           <div class="section">
             <div class="section-title">肌群</div>
             <div class="card" id="sumMuscles"></div>
