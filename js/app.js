@@ -24,6 +24,7 @@ LiftOS.UI = (() => {
     restTicker: null,
     workoutTicker: null,
     lastCompletedUndo: null, // { setIdx, expires }
+    historyDraft: null,
     pendingReplace: null,
   };
 
@@ -1280,33 +1281,8 @@ LiftOS.UI = (() => {
       </div>`);
   }
 
-  function confirmSaveHistoryCorrection() {
-    openOverlay(`
-      <div class="modal" onclick="event.stopPropagation()">
-        <h3>保存历史修正？</h3>
-        <p>将重算容量与 PR 统计，不会新增重复训练。</p>
-        <div class="modal-actions">
-          <button class="btn btn-primary" onclick="App.saveHistoryCorrection()">确认保存</button>
-          <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
-        </div>
-      </div>`);
-  }
-
-  function confirmDeleteHistorySet(ei, si) {
-    openOverlay(`
-      <div class="modal" onclick="event.stopPropagation()">
-        <h3>删除该历史组？</h3>
-        <p>将重算本条训练的容量与展示。</p>
-        <div class="modal-actions">
-          <button class="btn btn-danger" onclick="App.deleteHistorySet(${ei},${si})">删除</button>
-          <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
-        </div>
-      </div>`);
-  }
-
-  function saveHistoryCorrection() {
-    const entry = JSON.parse(JSON.stringify(S.getHistory().find((h) => h.id === state.editingHistoryId)));
-    if (!entry) return;
+  /** Snapshot current history-edit form into state before any overlay replace. */
+  function collectHistoryDraftFromForm(entry) {
     $all("[data-h]").forEach((inp) => {
       const ei = +inp.dataset.ei;
       const si = +inp.dataset.si;
@@ -1329,6 +1305,52 @@ LiftOS.UI = (() => {
         if (LiftOS.Gym?.normalizeSetLoad) LiftOS.Gym.normalizeSetLoad(s, ex.exerciseId);
       });
     });
+    return entry;
+  }
+
+  function confirmSaveHistoryCorrection() {
+    const entry = JSON.parse(JSON.stringify(S.getHistory().find((h) => h.id === state.editingHistoryId)));
+    if (!entry) return;
+    state.historyDraft = collectHistoryDraftFromForm(entry);
+    openOverlay(`
+      <div class="modal" onclick="event.stopPropagation()">
+        <h3>保存历史修正？</h3>
+        <p>将重算容量与 PR 统计，不会新增重复训练。</p>
+        <div class="modal-actions">
+          <button class="btn btn-primary" onclick="App.saveHistoryCorrection()">确认保存</button>
+          <button class="btn btn-ghost" onclick="App.reopenHistoryEditor()">返回编辑</button>
+        </div>
+      </div>`);
+  }
+
+  function reopenHistoryEditor() {
+    // draft discarded — reopen stored entry
+    state.historyDraft = null;
+    openHistoryDetail(state.editingHistoryId);
+  }
+
+  function confirmDeleteHistorySet(ei, si) {
+    const entry = JSON.parse(JSON.stringify(S.getHistory().find((h) => h.id === state.editingHistoryId)));
+    if (!entry) return;
+    // preserve any pending form edits first
+    state.historyDraft = collectHistoryDraftFromForm(entry);
+    openOverlay(`
+      <div class="modal" onclick="event.stopPropagation()">
+        <h3>删除该历史组？</h3>
+        <p>将重算本条训练的容量与展示。</p>
+        <div class="modal-actions">
+          <button class="btn btn-danger" onclick="App.deleteHistorySet(${ei},${si})">删除</button>
+          <button class="btn btn-ghost" onclick="App.reopenHistoryEditor()">取消</button>
+        </div>
+      </div>`);
+  }
+
+  function saveHistoryCorrection() {
+    const entry = state.historyDraft
+      ? JSON.parse(JSON.stringify(state.historyDraft))
+      : JSON.parse(JSON.stringify(S.getHistory().find((h) => h.id === state.editingHistoryId)));
+    state.historyDraft = null;
+    if (!entry) return;
     if (!W.updateHistoryEntry(entry)) {
       showToast("保存失败");
       return;
@@ -1339,12 +1361,16 @@ LiftOS.UI = (() => {
   }
 
   function deleteHistorySet(ei, si) {
-    const entry = JSON.parse(JSON.stringify(S.getHistory().find((h) => h.id === state.editingHistoryId)));
+    const entry = state.historyDraft
+      ? JSON.parse(JSON.stringify(state.historyDraft))
+      : JSON.parse(JSON.stringify(S.getHistory().find((h) => h.id === state.editingHistoryId)));
+    state.historyDraft = null;
     if (!entry?.exercises?.[ei]?.sets?.[si]) return;
     entry.exercises[ei].sets.splice(si, 1);
     entry.exercises = entry.exercises.filter((e) => e.sets.length);
     W.updateHistoryEntry(entry);
     openHistoryDetail(state.editingHistoryId);
+    showToast("已删除并重算");
   }
 
   async function applyWakeLock(on) {
@@ -2158,7 +2184,12 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     renderHome();
     // wake lock re-acquire when returning to visible active workout
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && S.getSession() && (S.getPrefs().keepAwake !== false)) {
+      if (
+        document.visibilityState === "visible" &&
+        state.screen === "training" &&
+        S.getSession() &&
+        S.getPrefs().keepAwake !== false
+      ) {
         applyWakeLock(true);
       }
     });
@@ -2384,6 +2415,8 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     openHistoryDetail,
     saveHistoryCorrection,
     confirmSaveHistoryCorrection,
+    reopenHistoryEditor,
+    collectHistoryDraftFromForm,
     confirmDeleteHistorySet,
     deleteHistorySet,
     recalculateSessionPRs: () => W.recalculateSessionPRs(state.session),

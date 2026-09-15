@@ -155,7 +155,7 @@ async function run() {
     results.push(log("edited note kept", /膝盖内扣/.test(migrated.notes.hack_squat || ""), migrated.notes.hack_squat));
     results.push(log("custom plan kept", migrated.plans.includes("MY CUSTOM")));
     results.push(log("active session kept", !!migrated.session && migrated.session.id === "ws_active_1"));
-    results.push(log("schema is 4", migrated.schema === 5, String(migrated.schema)));
+    results.push(log("schema is ${migrated.schema}", migrated.schema === 5, String(migrated.schema)));
 
     // idempotent second run
     await page.reload({ waitUntil: "load" });

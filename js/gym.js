@@ -61,9 +61,13 @@ LiftOS.Gym = (() => {
 
   /** Screen Wake Lock — only during active workout; never throw into UI. */
   let wakeLock = null;
+  let wakeLockRequests = 0;
+  let wakeLockReleases = 0;
   async function requestWakeLock() {
     try {
       if (!("wakeLock" in navigator)) return { ok: false, reason: "unsupported" };
+      if (wakeLock && !wakeLock.released) return { ok: true, reused: true };
+      wakeLockRequests += 1;
       wakeLock = await navigator.wakeLock.request("screen");
       wakeLock.addEventListener("release", () => {
         wakeLock = null;
@@ -76,6 +80,7 @@ LiftOS.Gym = (() => {
   async function releaseWakeLock() {
     try {
       if (wakeLock) {
+        wakeLockReleases += 1;
         await wakeLock.release();
         wakeLock = null;
       }
@@ -83,6 +88,14 @@ LiftOS.Gym = (() => {
     } catch {
       return { ok: false };
     }
+  }
+  function wakeLockStats() {
+    return { requests: wakeLockRequests, releases: wakeLockReleases, held: !!wakeLock };
+  }
+  /** Test hook to inject fake lock counters */
+  function __setWakeLockCounters(n) {
+    wakeLockRequests = n || 0;
+    wakeLockReleases = 0;
   }
 
   /**
@@ -223,6 +236,8 @@ LiftOS.Gym = (() => {
     formatPrev,
     requestWakeLock,
     releaseWakeLock,
+    wakeLockStats,
+    __setWakeLockCounters,
     buildWarmupPlan,
     plateLoad,
   };

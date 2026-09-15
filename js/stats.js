@@ -97,8 +97,8 @@ LiftOS.Stats = (() => {
   }
 
   /** Aggregate history + optional live session for an exercise. */
-  function exerciseHistory(exerciseId, extraSessions = []) {
-    const history = LiftOS.Storage.getHistory();
+  function exerciseHistory(exerciseId, extraSessions = [], historyOverride = null) {
+    const history = historyOverride || LiftOS.Storage.getHistory();
     const rows = [];
     history.forEach((h) => {
       (h.exercises || []).forEach((ex) => {
@@ -134,8 +134,8 @@ LiftOS.Stats = (() => {
     return rows;
   }
 
-  function bestSet(exerciseId, extraSessions = []) {
-    const rows = exerciseHistory(exerciseId, extraSessions);
+  function bestSet(exerciseId, extraSessions = [], historyOverride = null) {
+    const rows = exerciseHistory(exerciseId, extraSessions, historyOverride);
     const isBW = LiftOS.isBodyweight(exerciseId);
     let best = null;
     rows.forEach((r) => {
@@ -159,11 +159,11 @@ LiftOS.Stats = (() => {
     return best;
   }
 
-  function bestE1RM(exerciseId, extraSessions = []) {
+  function bestE1RM(exerciseId, extraSessions = [], historyOverride = null) {
     const master = LiftOS.getExercise(exerciseId);
     if (master && master.supportsE1RM === false) return null;
     if (master && master.equipment === "bodyweight") return null;
-    const rows = exerciseHistory(exerciseId, extraSessions);
+    const rows = exerciseHistory(exerciseId, extraSessions, historyOverride);
     let best = null;
     rows.forEach((r) => {
       r.sets.forEach((s) => {
@@ -197,15 +197,14 @@ LiftOS.Stats = (() => {
    * Detect PRs from a just-completed work set.
    * Returns array of { type, label, detail }
    */
-  function detectSetPRs(exerciseId, set, extraSessions = []) {
+  function detectSetPRs(exerciseId, set, extraSessions = [], historyOverride = null) {
     const results = [];
-    // bodyweight / zero-load: no weight/e1RM PR; reps PR still possible when weight matches (0)
     if (!set || !isWork(set) || !set.completed || set.reps == null || set.reps <= 0) return results;
     const master = LiftOS.getExercise(exerciseId);
     const isBW = master?.equipment === "bodyweight";
     if (!isBW && (set.weight == null || set.weight <= 0)) return results;
 
-    const priorBest = bestSet(exerciseId, extraSessions);
+    const priorBest = bestSet(exerciseId, extraSessions, historyOverride);
     if (!priorBest || set.weight > priorBest.weight) {
       if (!isBW && set.weight > 0) {
         results.push({
@@ -232,7 +231,7 @@ LiftOS.Stats = (() => {
       const conf = e1RMConfidence(set.reps);
       if (conf >= 0.5 && set.weight > 0) {
         const val = e1RM(set.weight, set.reps);
-        const priorE = bestE1RM(exerciseId, extraSessions);
+        const priorE = bestE1RM(exerciseId, extraSessions, historyOverride);
         if (!priorE || val > priorE.e1rm + 0.05) {
           results.push({
             type: "e1rm",
@@ -403,6 +402,123 @@ LiftOS.Stats = (() => {
     ];
   }
 
+  /**
+   * Assisted Pareto: candidate improves if it strictly dominates ≥1 prior
+   * (less/equal assist + equal/better reps, one strict) AND is not dominated
+   * by any prior.
+   */
+  function assistedDominates(a, b) {
+    const aa = Number(a.assistanceKg ?? a.weight) || 0;
+    const ba = Number(b.assistanceKg ?? b.weight) || 0;
+    const ar = Number(a.reps) || 0;
+    const br = Number(b.reps) || 0;
+    if (ar <= 0 || br <= 0) return false;
+    const le = aa <= ba + 1e-9;
+    const ge = ar >= br - 1e-9;
+    const strict = aa < ba - 1e-9 || ar > br + 1e-9;
+    return le && ge && strict;
+  }
+
+  function assistedIsDominatedByAny(candidate, priors) {
+    return priors.some((p) => assistedDominates(p, candidate));
+  }
+
+  function assistedWeaklyDominates(a, b) {
+    const aa = Number(a.assistanceKg ?? a.weight) || 0;
+    const ba = Number(b.assistanceKg ?? b.weight) || 0;
+    const ar = Number(a.reps) || 0;
+    const br = Number(b.reps) || 0;
+    if (ar <= 0 || br <= 0) return false;
+    return aa <= ba + 1e-9 && ar >= br - 1e-9;
+  }
+
+  function assistedImprovement(candidate, priors) {
+    if (!priors.length) return "baseline";
+    // equal or worse vs any prior → not a PR
+    if (assistedIsDominatedByAny(candidate, priors)) return false;
+    if (priors.some((p) => assistedWeaklyDominates(p, candidate))) return false;
+    if (priors.some((p) => assistedDominates(candidate, p))) return "pr";
+    return false;
+  }
+
+  /**
+   * Pure PR rebuild for a history entry against an explicit baseline history
+   * array (must already exclude this entry). Replays sets in order so earlier
+   * corrected sets become baseline for later ones.
+   */
+  function rebuildEntryPRs(entry, baselineHistory) {
+    let prCount = 0;
+    const seen = {
+      // per exerciseId running assisted set list for sequential compare
+      assisted: {},
+      // synthetic extra sessions built from already-replayed sets
+      extra: {},
+    };
+
+    function ensureExtra(exId) {
+      if (!seen.extra[exId]) {
+        seen.extra[exId] = {
+          id: `replay_${entry.id}_${exId}`,
+          startTime: entry.startTime || Date.now(),
+          planName: entry.planName,
+          exercises: [{ exerciseId: exId, name: "", sets: [] }],
+        };
+      }
+      return seen.extra[exId];
+    }
+
+    (entry.exercises || []).forEach((ex) => {
+      const exId = ex.exerciseId;
+      seen.assisted[exId] = (baselineHistory || [])
+        .flatMap((h) => (h.exercises || [])
+          .filter((e) => e.exerciseId === exId)
+          .flatMap((e) => (e.sets || []).filter((s) => s.loadMode === "assisted" && s.reps)));
+
+      (ex.sets || []).forEach((s) => {
+        if (!isWork(s)) return;
+        if (s.loadMode === "assisted") {
+          const cand = {
+            assistanceKg: s.assistanceKg ?? s.weight,
+            reps: s.reps,
+          };
+          const priors = seen.assisted[exId] || [];
+          const verdict = assistedImprovement(cand, priors);
+          if (verdict === "pr") prCount += 1;
+          // append this set as future prior for sequential replay
+          seen.assisted[exId] = priors.concat([
+            { assistanceKg: cand.assistanceKg, reps: cand.reps, weight: cand.assistanceKg, loadMode: "assisted" },
+          ]);
+          ensureExtra(exId).exercises[0].sets.push({
+            type: s.type,
+            weight: s.weight,
+            reps: s.reps,
+            rir: s.rir,
+            loadMode: s.loadMode,
+            assistanceKg: s.assistanceKg,
+            addedWeightKg: s.addedWeightKg,
+            completed: true,
+          });
+          return;
+        }
+        // non-assisted: compare against baselineHistory + already-replayed sets only
+        const extras = Object.values(seen.extra);
+        const detected = detectSetPRs(exId, { ...s, completed: true, type: s.type || "work" }, extras, baselineHistory);
+        prCount += detected.length;
+        ensureExtra(exId).exercises[0].sets.push({
+          type: s.type,
+          weight: s.weight,
+          reps: s.reps,
+          rir: s.rir,
+          loadMode: s.loadMode,
+          assistanceKg: s.assistanceKg,
+          addedWeightKg: s.addedWeightKg,
+          completed: true,
+        });
+      });
+    });
+    return prCount;
+  }
+
   function localDateKey(d = new Date()) {
     return LiftOS.localDateKey(d);
   }
@@ -431,5 +547,8 @@ LiftOS.Stats = (() => {
     e1rmSeries,
     sessionBaseline,
     localDateKey,
+    assistedDominates,
+    assistedImprovement,
+    rebuildEntryPRs,
   };
 })();

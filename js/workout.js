@@ -180,38 +180,27 @@ LiftOS.Workout = (() => {
     if (S().isWork(set) && !isDuration) {
       const liveRows = S().sessionBaseline(session, ex.exerciseId, set.id);
       if (set.loadMode === "assisted") {
-        // Compare only assisted sets; prefer less assistance at equal/better reps
         const assistedHistory = (S().exerciseHistory(ex.exerciseId, liveRows) || [])
           .flatMap((r) => r.sets.filter((x) => x.loadMode === "assisted" && x.reps));
-        // exclude current set from baseline (sessionBaseline already stops before set.id)
-        const minAssistEntry = assistedHistory.reduce((best, x) => {
-          const a = Number(x.assistanceKg ?? x.weight) || 0;
-          if (!best) return { assist: a, reps: x.reps };
-          if (a < best.assist - 1e-9) return { assist: a, reps: x.reps };
-          if (Math.abs(a - best.assist) < 1e-9 && x.reps > best.reps) return { assist: a, reps: x.reps };
-          return best;
-        }, null);
-        const assist = Number(set.assistanceKg) || 0;
-        const alreadyBaseline = session.prs?.some(
-          (p) => p.exerciseId === ex.exerciseId && p.type === "assisted" && p.label === "Assist Baseline"
-        );
-        if (!minAssistEntry && !alreadyBaseline) {
-          newPrs.push({
-            type: "assisted",
-            label: "Assist Baseline",
-            detail: `辅助 ${assist}kg × ${set.reps}`,
-          });
-        } else if (minAssistEntry) {
-          const betterAssist = assist < minAssistEntry.assist - 1e-9 && set.reps >= minAssistEntry.reps;
-          const sameAssistMoreReps = Math.abs(assist - minAssistEntry.assist) < 1e-9 && set.reps > minAssistEntry.reps;
-          // 35kg×6 should not beat 40kg×8 incorrectly: only if assist lower AND reps >=, or same assist more reps
-          if (betterAssist || sameAssistMoreReps) {
+        const cand = { assistanceKg: Number(set.assistanceKg) || 0, reps: set.reps };
+        const verdict = S().assistedImprovement(cand, assistedHistory);
+        if (verdict === "baseline") {
+          const alreadyBaseline = session.prs?.some(
+            (p) => p.exerciseId === ex.exerciseId && p.label === "Assist Baseline"
+          );
+          if (!alreadyBaseline) {
             newPrs.push({
               type: "assisted",
-              label: "New Assist PR",
-              detail: `辅助 ${assist}kg × ${set.reps}`,
+              label: "Assist Baseline",
+              detail: `辅助 ${cand.assistanceKg}kg × ${set.reps}`,
             });
           }
+        } else if (verdict === "pr") {
+          newPrs.push({
+            type: "assisted",
+            label: "New Assist PR",
+            detail: `辅助 ${cand.assistanceKg}kg × ${set.reps}`,
+          });
         }
       } else {
         const prior = S().detectSetPRs(ex.exerciseId, set, liveRows);
@@ -469,44 +458,34 @@ LiftOS.Workout = (() => {
         if (!set.completed || !S().isWork(set)) return;
         if (set.durationSec != null && set.reps == null) return;
         const liveRows = S().sessionBaseline(session, ex.exerciseId, set.id);
-        if (set.loadMode === "assisted") {
-          const assistedHistory = (S().exerciseHistory(ex.exerciseId, liveRows) || [])
-            .flatMap((r) => r.sets.filter((x) => x.loadMode === "assisted" && x.reps));
-          const minAssistEntry = assistedHistory.reduce((best, x) => {
-            const a = Number(x.assistanceKg ?? x.weight) || 0;
-            if (!best) return { assist: a, reps: x.reps };
-            if (a < best.assist - 1e-9) return { assist: a, reps: x.reps };
-            if (Math.abs(a - best.assist) < 1e-9 && x.reps > best.reps) return { assist: a, reps: x.reps };
-            return best;
-          }, null);
-          const assist = Number(set.assistanceKg) || 0;
-          const alreadyBaseline = session.prs.some(
-            (p) => p.exerciseId === ex.exerciseId && p.label === "Assist Baseline"
-          );
-          if (!minAssistEntry && !alreadyBaseline) {
-            session.prs.push({
-              type: "assisted",
-              label: "Assist Baseline",
-              detail: `辅助 ${assist}kg × ${set.reps}`,
-              setId: set.id,
-              exerciseId: ex.exerciseId,
-              exerciseName: ex.name,
-            });
-          } else if (minAssistEntry) {
-            const betterAssist = assist < minAssistEntry.assist - 1e-9 && set.reps >= minAssistEntry.reps;
-            const sameAssistMoreReps = Math.abs(assist - minAssistEntry.assist) < 1e-9 && set.reps > minAssistEntry.reps;
-            if (betterAssist || sameAssistMoreReps) {
+          if (set.loadMode === "assisted") {
+            const assistedHistory = (S().exerciseHistory(ex.exerciseId, liveRows) || [])
+              .flatMap((r) => r.sets.filter((x) => x.loadMode === "assisted" && x.reps));
+            const cand = { assistanceKg: Number(set.assistanceKg) || 0, reps: set.reps };
+            const verdict = S().assistedImprovement(cand, assistedHistory);
+            const alreadyBaseline = session.prs.some(
+              (p) => p.exerciseId === ex.exerciseId && p.label === "Assist Baseline"
+            );
+            if (verdict === "baseline" && !alreadyBaseline) {
+              session.prs.push({
+                type: "assisted",
+                label: "Assist Baseline",
+                detail: `辅助 ${cand.assistanceKg}kg × ${set.reps}`,
+                setId: set.id,
+                exerciseId: ex.exerciseId,
+                exerciseName: ex.name,
+              });
+            } else if (verdict === "pr") {
               session.prs.push({
                 type: "assisted",
                 label: "New Assist PR",
-                detail: `辅助 ${assist}kg × ${set.reps}`,
+                detail: `辅助 ${cand.assistanceKg}kg × ${set.reps}`,
                 setId: set.id,
                 exerciseId: ex.exerciseId,
                 exerciseName: ex.name,
               });
             }
-          }
-        } else {
+          } else {
           const prior = S().detectSetPRs(ex.exerciseId, set, liveRows);
           prior.forEach((p) => {
             session.prs.push({
@@ -542,6 +521,7 @@ LiftOS.Workout = (() => {
     const prev = ex.sets.slice(0, setIdx).reverse().find((s) => s.completed);
     if (!prev) return { ok: false, error: "no previous completed set" };
     const cur = ex.sets[setIdx];
+    // copy load/reps/rir only — keep semantic set type (work/amrap/failure...)
     cur.weight = prev.weight;
     cur.reps = prev.reps;
     cur.rir = prev.rir;
@@ -549,7 +529,6 @@ LiftOS.Workout = (() => {
     cur.loadMode = prev.loadMode;
     cur.assistanceKg = prev.assistanceKg;
     cur.addedWeightKg = prev.addedWeightKg;
-    cur.type = prev.type === "warmup" ? "work" : prev.type;
     save(session);
     return { ok: true, copied: cur };
   }
@@ -598,31 +577,9 @@ LiftOS.Workout = (() => {
     });
     entry.volume = Math.round(volume);
     entry.workSets = workSets;
-    // recompute PR presentation count from remaining sets vs prior history excluding this entry
-    const otherHistory = hist.filter((h) => h.id !== entry.id);
-    let prCount = 0;
-    (entry.exercises || []).forEach((ex) => {
-      (ex.sets || []).forEach((s) => {
-        if (!S().isWork(s) || s.loadMode === "assisted") {
-          if (s.loadMode === "assisted" && s.reps) {
-            // count assist improvements only vs other history
-            const prior = otherHistory.flatMap((h) =>
-              (h.exercises || [])
-                .filter((e) => e.exerciseId === ex.exerciseId)
-                .flatMap((e) => (e.sets || []).filter((x) => x.loadMode === "assisted"))
-            );
-            if (prior.length) {
-              const minA = Math.min(...prior.map((x) => Number(x.assistanceKg ?? x.weight) || 0));
-              if ((Number(s.assistanceKg) || 0) < minA && s.reps >= 1) prCount += 1;
-            }
-          }
-          return;
-        }
-        const detected = S().detectSetPRs(ex.exerciseId, { ...s, completed: true }, otherHistory.filter((h) => true).map((h) => ({ exercises: h.exercises })));
-        if (detected.length) prCount += detected.length;
-      });
-    });
-    entry.prs = prCount;
+    // Pure rebuild: baseline excludes this entry; replay sets in order
+    const baselineHistory = hist.filter((h) => h.id !== entry.id);
+    entry.prs = S().rebuildEntryPRs(entry, baselineHistory);
     hist[i] = entry;
     St().saveHistory(hist);
     return true;

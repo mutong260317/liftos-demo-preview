@@ -537,6 +537,205 @@ async function run() {
     await page.waitForTimeout(200);
     results.push(log("keepAwake toggle in profile UI", (await page.locator("#btnKeepAwake").count()) > 0));
 
+    /* ===== Round 2 P0 ===== */
+
+    // R2-P0-1 history correction UI draft survives confirm
+    const histUi = await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "5");
+      const hist = [
+        {
+          id: "ws_ui_corr",
+          date: LiftOS.localDateKey(),
+          planName: "PUSH A",
+          volume: 200,
+          workSets: 1,
+          prs: 0,
+          exercises: [
+            { exerciseId: "incline", name: "上斜", sets: [{ type: "work", weight: 20, reps: 10, rir: 2, loadMode: "external" }] },
+          ],
+        },
+      ];
+      localStorage.setItem("liftos.history", JSON.stringify(hist));
+      LiftOS.Storage.ensureDefaults();
+      App.state.session = null;
+      App.nav("data");
+      return { histLen: LiftOS.Storage.getHistory().length, emptyVisible: !!document.querySelector("#dataEmpty:not(.hide)") };
+    });
+    await page.waitForTimeout(250);
+    results.push(log("history UI setup", histUi.histLen === 1 && !histUi.emptyVisible, JSON.stringify(histUi)));
+    await page.evaluate(() => App.openHistoryDetail("ws_ui_corr"));
+    await page.waitForTimeout(250);
+    const editorOpen = await page.locator('[data-h="r"]').count();
+    results.push(log("history editor open", editorOpen > 0, String(editorOpen)));
+    if (editorOpen) {
+      await page.locator('[data-h="r"]').first().fill("12");
+      await page.locator('[data-h="type"]').first().selectOption("amrap");
+      await page.evaluate(() => App.confirmSaveHistoryCorrection());
+      await page.waitForTimeout(150);
+      await page.evaluate(() => App.saveHistoryCorrection());
+      await page.waitForTimeout(150);
+      const savedUi = await page.evaluate(() => {
+        const h = LiftOS.Storage.getHistory().find((x) => x.id === "ws_ui_corr");
+        return { reps: h.exercises[0].sets[0].reps, type: h.exercises[0].sets[0].type, volume: h.volume, len: LiftOS.Storage.getHistory().length };
+      });
+      results.push(
+        log(
+          "UI history correction persists after confirm",
+          savedUi.reps === 12 && savedUi.type === "amrap" && savedUi.volume === 240 && savedUi.len === 1,
+          JSON.stringify(savedUi)
+        )
+      );
+    } else {
+      results.push(log("UI history correction persists after confirm", false, "editor not open"));
+    }
+
+    // R2-P0-2 PR rebuild excludes old entry
+    const prRebuild = await page.evaluate(() => {
+      // baseline 20x10; entry had 25x10 (PR). Correct down to 18x10 → no PR
+      const baseline = [
+        {
+          id: "ws_prior",
+          date: LiftOS.localDateKey(),
+          planName: "P",
+          exercises: [{ exerciseId: "incline", name: "上斜", sets: [{ type: "work", weight: 20, reps: 10, rir: 1, loadMode: "external" }] }],
+        },
+      ];
+      const entryHigh = {
+        id: "ws_edit",
+        date: LiftOS.localDateKey(),
+        planName: "P",
+        startTime: Date.now(),
+        exercises: [{ exerciseId: "incline", name: "上斜", sets: [{ type: "work", weight: 25, reps: 10, rir: 1, loadMode: "external", completed: true }] }],
+      };
+      const highCount = LiftOS.Stats.rebuildEntryPRs(entryHigh, baseline);
+      const entryLow = {
+        id: "ws_edit",
+        date: LiftOS.localDateKey(),
+        planName: "P",
+        startTime: Date.now(),
+        exercises: [{ exerciseId: "incline", name: "上斜", sets: [{ type: "work", weight: 18, reps: 10, rir: 1, loadMode: "external", completed: true }] }],
+      };
+      const lowCount = LiftOS.Stats.rebuildEntryPRs(entryLow, baseline);
+      // two sequential: first 25x10 PR, second 25x9 not another weight PR
+      const entryTwo = {
+        id: "ws_edit2",
+        date: LiftOS.localDateKey(),
+        planName: "P",
+        startTime: Date.now(),
+        exercises: [
+          {
+            exerciseId: "incline",
+            name: "上斜",
+            sets: [
+              { type: "work", weight: 25, reps: 10, rir: 1, loadMode: "external", completed: true },
+              { type: "work", weight: 25, reps: 9, rir: 1, loadMode: "external", completed: true },
+            ],
+          },
+        ],
+      };
+      const twoCount = LiftOS.Stats.rebuildEntryPRs(entryTwo, baseline);
+      return { highCount, lowCount, twoCount };
+    });
+    results.push(log("correct down below prior → PR count 0", prRebuild.highCount >= 1 && prRebuild.lowCount === 0, JSON.stringify(prRebuild)));
+    results.push(log("two sets sequential no dup weight PR", prRebuild.twoCount === 2, String(prRebuild.twoCount))); // weight+e1rm once
+
+    // R2-P0-3 wake lock only in training
+    const wl = await page.evaluate(() => {
+      LiftOS.Gym.__setWakeLockCounters(0);
+      // stub navigator.wakeLock
+      let calls = 0;
+      const fake = {
+        released: false,
+        addEventListener() {},
+        async release() {
+          this.released = true;
+        },
+      };
+      const orig = navigator.wakeLock;
+      try {
+        Object.defineProperty(navigator, "wakeLock", {
+          configurable: true,
+          value: { request: async () => { calls += 1; return { ...fake, released: false, addEventListener() {}, async release() { this.released = true; } }; } },
+        });
+      } catch (_) {}
+      return { canStub: !!navigator.wakeLock };
+    });
+    // guard test: request twice should not double if held — simulate via Gym internals after one request
+    const wl2 = await page.evaluate(async () => {
+      // use real API if present else fake
+      if (!("wakeLock" in navigator)) {
+        Object.defineProperty(navigator, "wakeLock", {
+          configurable: true,
+          value: {
+            request: async () => ({ released: false, addEventListener() {}, async release() { this.released = true; } }),
+          },
+        });
+      }
+      LiftOS.Gym.__setWakeLockCounters(0);
+      await LiftOS.Gym.requestWakeLock();
+      await LiftOS.Gym.requestWakeLock();
+      const held = LiftOS.Gym.wakeLockStats();
+      await LiftOS.Gym.releaseWakeLock();
+      const after = LiftOS.Gym.wakeLockStats();
+      return { held, after };
+    });
+    results.push(
+      log(
+        "wake lock no duplicate acquire",
+        wl2.held.requests <= 1 && wl2.after.held === false,
+        JSON.stringify(wl2)
+      )
+    );
+
+    // R2-P0-4 copy previous keeps type
+    const copyType = await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "5");
+      LiftOS.Storage.ensureDefaults();
+      const plan = LiftOS.Plans.get("pushA");
+      const s = LiftOS.Workout.createFromPlan(plan);
+      let idx = LiftOS.Workout.activeSetIndex(s);
+      const ex = LiftOS.Workout.currentEx(s);
+      while (idx >= 0 && ex.sets[idx].type === "warmup") {
+        LiftOS.Workout.completeSet(s, idx, { weight: 10, reps: 12, rir: null });
+        idx = LiftOS.Workout.activeSetIndex(s);
+      }
+      LiftOS.Workout.setSetType(s, idx, "amrap");
+      LiftOS.Workout.completeSet(s, idx, { weight: 20, reps: 15, rir: 0, type: "amrap" });
+      LiftOS.Workout.clearRest(s);
+      const idx2 = LiftOS.Workout.activeSetIndex(s);
+      const beforeType = ex.sets[idx2].type;
+      LiftOS.Workout.copyPreviousCompletedSet(s, idx2);
+      return { beforeType, afterType: ex.sets[idx2].type, reps: ex.sets[idx2].reps };
+    });
+    results.push(
+      log(
+        "copy previous does not copy amrap type",
+        copyType.beforeType === "work" && copyType.afterType === "work" && copyType.reps === 15,
+        JSON.stringify(copyType)
+      )
+    );
+
+    // R2-P0-5 assisted Pareto mixed history
+    const pareto = await page.evaluate(() => {
+      const priors = [
+        { assistanceKg: 40, reps: 10 },
+        { assistanceKg: 30, reps: 5 },
+      ];
+      const cand35x10 = { assistanceKg: 35, reps: 10 };
+      const cand28x10 = { assistanceKg: 28, reps: 10 }; // dominates both
+      const cand35x4 = { assistanceKg: 35, reps: 4 }; // dominated by 40x10? 35<40 but 4<10 — trade-off, not dominate either way... 40x10 dominates 35x4
+      return {
+        imp35: LiftOS.Stats.assistedImprovement(cand35x10, priors),
+        imp28: LiftOS.Stats.assistedImprovement(cand28x10, priors),
+        imp35x4: LiftOS.Stats.assistedImprovement(cand35x4, priors),
+      };
+    });
+    results.push(log("35x10 improves vs 40x10 (not only min assist)", pareto.imp35 === "pr", JSON.stringify(pareto)));
+    results.push(log("28x10 dominates priors", pareto.imp28 === "pr", JSON.stringify(pareto)));
+    results.push(log("35x4 dominated not PR", pareto.imp35x4 === false, JSON.stringify(pareto)));
+
     await page.screenshot({ path: path.join(OUT, "final.png") });
   } catch (err) {
     results.push(log("suite error", false, err.message || String(err)));
