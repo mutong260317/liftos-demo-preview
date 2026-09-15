@@ -1,0 +1,24 @@
+name: QA
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  functional-qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Playwright
+        run: npm install --no-fund --no-audit playwright-core
+      - name: Install Chromium deps
+        run: npx --yes playwright install chromium --with-deps
+      - name: Run V0.2 suite
+        run: node scripts/qa-v02.js
+      - name: Run review-fix suite
+        run: node scripts/qa-review-fixes.js
