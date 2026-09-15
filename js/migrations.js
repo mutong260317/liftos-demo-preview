@@ -60,35 +60,28 @@ LiftOS.Migrations = (() => {
     }
   }
 
-  /** v4 → v5: ensure set fields exist (type/loadMode/duration) without wiping. */
+  /** v4 → v5: normalize loadMode consistently for session + history. */
   function migrateToV5() {
+    const fixSets = (exerciseId, sets) => {
+      (sets || []).forEach((s) => {
+        if (LiftOS.Gym?.applyLegacySetFields) LiftOS.Gym.applyLegacySetFields(exerciseId, s);
+        else {
+          if (!s.type) s.type = "work";
+          if (s.durationSec == null) s.durationSec = null;
+        }
+      });
+    };
+
     const session = readJson("liftos.session", null);
     if (session && Array.isArray(session.exercises)) {
-      session.exercises.forEach((ex) => {
-        (ex.sets || []).forEach((s) => {
-          if (!s.type) s.type = "work";
-          if (!s.loadMode) {
-            s.loadMode = LiftOS.Gym ? LiftOS.Gym.defaultLoadMode(ex.exerciseId) : s.weight > 0 ? "external" : "bodyweight";
-          }
-          if (s.durationSec == null) s.durationSec = null;
-          if (s.assistanceKg == null) s.assistanceKg = null;
-          if (s.addedWeightKg == null) s.addedWeightKg = null;
-        });
-      });
+      session.exercises.forEach((ex) => fixSets(ex.exerciseId, ex.sets));
       session.schema = 5;
       writeJson("liftos.session", session);
     }
     const history = readJson("liftos.history", null);
     if (Array.isArray(history)) {
       history.forEach((h) => {
-        (h.exercises || []).forEach((ex) => {
-          (ex.sets || []).forEach((s) => {
-            if (!s.type) s.type = "work";
-            if (s.durationSec == null) s.durationSec = null;
-            if (s.assistanceKg == null) s.assistanceKg = null;
-            if (s.addedWeightKg == null) s.addedWeightKg = null;
-          });
-        });
+        (h.exercises || []).forEach((ex) => fixSets(ex.exerciseId, ex.sets));
       });
       writeJson("liftos.history", history);
     }

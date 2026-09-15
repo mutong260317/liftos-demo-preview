@@ -108,6 +108,7 @@ LiftOS.UI = (() => {
   /* ---------- navigation ---------- */
   function nav(name) {
     if (name === "training") return navTraining();
+    if (state.screen === "training" && name !== "training") applyWakeLock(false);
     state.screen = name;
     $all(".screen").forEach((s) => s.classList.toggle("active", s.dataset.screen === name));
     $all(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.nav === name));
@@ -866,22 +867,6 @@ LiftOS.UI = (() => {
     return LiftOS.getExercise(ex.exerciseId)?.defaultIncrement ?? 2.5;
   }
 
-  function stepWeight(i, delta) {
-    const ex = W.currentEx(state.session);
-    const set = ex.sets[i];
-    const bw = LiftOS.isBodyweight(ex.exerciseId);
-    const base = set.weight == null ? (bw ? 0 : ex.sets.find((s) => s.weight != null)?.weight ?? 20) : set.weight;
-    set.weight = Math.max(0, Math.round((base + delta) * 10) / 10);
-    W.save(state.session);
-    const el = $("#wDisplay");
-    if (el) {
-      el.textContent = set.weight;
-      const unit = el.parentElement?.querySelector(".unit");
-      if (unit && bw) unit.textContent = set.weight > 0 ? "kg" : "自重";
-    }
-    if (navigator.vibrate) navigator.vibrate(8);
-  }
-
   function stepReps(i, delta) {
     const ex = W.currentEx(state.session);
     const set = ex.sets[i];
@@ -973,9 +958,54 @@ LiftOS.UI = (() => {
   }
 
   function setLoadMode(i, mode) {
-    W.updateSetField(state.session, i, "loadMode", mode);
-    if (mode === "bodyweight") W.updateSetField(state.session, i, "weight", 0);
+    const set = W.currentEx(state.session).sets[i];
+    set.loadMode = mode;
+    // clear stale fields when switching modes
+    if (mode === "bodyweight") {
+      set.weight = 0;
+      set.assistanceKg = null;
+      set.addedWeightKg = null;
+    } else if (mode === "added_weight") {
+      set.assistanceKg = null;
+      if (set.addedWeightKg == null) set.addedWeightKg = Number(set.weight) || 0;
+      set.weight = set.addedWeightKg;
+    } else if (mode === "assisted") {
+      set.addedWeightKg = null;
+      if (set.assistanceKg == null) set.assistanceKg = Number(set.weight) || 0;
+      set.weight = set.assistanceKg;
+    } else {
+      set.assistanceKg = null;
+      set.addedWeightKg = null;
+    }
+    LiftOS.Gym.normalizeSetLoad(set, W.currentEx(state.session).exerciseId);
+    W.save(state.session);
     renderSetList();
+  }
+
+  function stepWeight(i, delta) {
+    const ex = W.currentEx(state.session);
+    const set = ex.sets[i];
+    const mode = set.loadMode || "external";
+    const inc = incOf(ex) || 2.5;
+    let base = set.weight;
+    if (base == null) base = mode === "bodyweight" ? 0 : ex.sets.find((s) => s.weight != null)?.weight ?? 20;
+    const next = Math.max(0, Math.round((Number(base) + delta) * 10) / 10);
+    set.weight = next;
+    if (mode === "added_weight") set.addedWeightKg = next;
+    if (mode === "assisted") set.assistanceKg = next;
+    if (mode === "bodyweight" && next > 0) {
+      // treat as added weight
+      set.loadMode = "added_weight";
+      set.addedWeightKg = next;
+    }
+    W.save(state.session);
+    const el = $("#wDisplay");
+    if (el) {
+      el.textContent = set.weight;
+      const unit = el.parentElement?.querySelector(".unit");
+      if (unit) unit.textContent = "kg";
+    }
+    if (navigator.vibrate) navigator.vibrate(8);
   }
 
   function stepAssist(i, d) {
@@ -1215,22 +1245,61 @@ LiftOS.UI = (() => {
         </div>
         <div class="sheet-body">
           ${rows
-            .map(
-              ({ ei, si, ex, s }) => `
+            .map(({ ei, si, ex, s }) => {
+              const isDur = !!LiftOS.isDurationExercise?.(ex.exerciseId);
+              return `
             <div class="plan-day-item">
               <div class="info">
-                <div class="name">${esc(ex.name)} · ${s.type || "work"}</div>
+                <div class="name">${esc(ex.name)}</div>
                 <div class="sets">
-                  W <input class="form-input" style="width:64px;height:36px;display:inline-block" data-h="w" data-ei="${ei}" data-si="${si}" value="${s.weight ?? ""}" />
-                  R <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="r" data-ei="${ei}" data-si="${si}" value="${s.reps ?? ""}" />
-                  RIR <input class="form-input" style="width:48px;height:36px;display:inline-block" data-h="rir" data-ei="${ei}" data-si="${si}" value="${s.rir ?? ""}" />
+                  类型
+                  <select class="form-input" style="width:90px;height:36px;display:inline-block" data-h="type" data-ei="${ei}" data-si="${si}">
+                    ${["work", "warmup", "drop", "failure", "amrap"].map((t) => `<option value="${t}" ${s.type === t ? "selected" : ""}>${t}</option>`).join("")}
+                  </select>
+                  负荷
+                  <select class="form-input" style="width:110px;height:36px;display:inline-block" data-h="loadMode" data-ei="${ei}" data-si="${si}">
+                    ${["external", "bodyweight", "added_weight", "assisted"].map((m) => `<option value="${m}" ${(s.loadMode || "external") === m ? "selected" : ""}>${m}</option>`).join("")}
+                  </select>
+                </div>
+                <div class="sets mt-1">
+                  ${isDur
+                    ? `秒 <input class="form-input" style="width:64px;height:36px;display:inline-block" data-h="durationSec" data-ei="${ei}" data-si="${si}" value="${s.durationSec ?? ""}" />`
+                    : `W <input class="form-input" style="width:64px;height:36px;display:inline-block" data-h="w" data-ei="${ei}" data-si="${si}" value="${s.weight ?? ""}" />
+                       R <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="r" data-ei="${ei}" data-si="${si}" value="${s.reps ?? ""}" />
+                       RIR <input class="form-input" style="width:48px;height:36px;display:inline-block" data-h="rir" data-ei="${ei}" data-si="${si}" value="${s.rir ?? ""}" />
+                       辅助 <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="assist" data-ei="${ei}" data-si="${si}" value="${s.assistanceKg ?? ""}" />
+                       附加 <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="added" data-ei="${ei}" data-si="${si}" value="${s.addedWeightKg ?? ""}" />`}
                 </div>
               </div>
-              <button class="btn btn-ghost btn-sm" onclick="App.deleteHistorySet(${ei},${si})">删</button>
-            </div>`
-            )
+              <button class="btn btn-ghost btn-sm" onclick="App.confirmDeleteHistorySet(${ei},${si})">删</button>
+            </div>`;
+            })
             .join("")}
-          <button class="btn btn-primary btn-block mt-3" onclick="App.saveHistoryCorrection()">保存修正</button>
+          <button class="btn btn-primary btn-block mt-3" onclick="App.confirmSaveHistoryCorrection()">保存修正</button>
+        </div>
+      </div>`);
+  }
+
+  function confirmSaveHistoryCorrection() {
+    openOverlay(`
+      <div class="modal" onclick="event.stopPropagation()">
+        <h3>保存历史修正？</h3>
+        <p>将重算容量与 PR 统计，不会新增重复训练。</p>
+        <div class="modal-actions">
+          <button class="btn btn-primary" onclick="App.saveHistoryCorrection()">确认保存</button>
+          <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
+        </div>
+      </div>`);
+  }
+
+  function confirmDeleteHistorySet(ei, si) {
+    openOverlay(`
+      <div class="modal" onclick="event.stopPropagation()">
+        <h3>删除该历史组？</h3>
+        <p>将重算本条训练的容量与展示。</p>
+        <div class="modal-actions">
+          <button class="btn btn-danger" onclick="App.deleteHistorySet(${ei},${si})">删除</button>
+          <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
         </div>
       </div>`);
   }
@@ -1242,12 +1311,23 @@ LiftOS.UI = (() => {
       const ei = +inp.dataset.ei;
       const si = +inp.dataset.si;
       const field = inp.dataset.h;
-      const raw = inp.value.trim();
+      const raw = (inp.value ?? "").toString().trim();
       const ex = entry.exercises[ei];
       if (!ex || !ex.sets[si]) return;
-      if (field === "w") ex.sets[si].weight = raw === "" ? null : parseFloat(raw);
-      if (field === "r") ex.sets[si].reps = raw === "" ? null : parseInt(raw, 10);
-      if (field === "rir") ex.sets[si].rir = raw === "" ? null : parseInt(raw, 10);
+      const set = ex.sets[si];
+      if (field === "w") set.weight = raw === "" ? null : parseFloat(raw);
+      if (field === "r") set.reps = raw === "" ? null : parseInt(raw, 10);
+      if (field === "rir") set.rir = raw === "" ? null : parseInt(raw, 10);
+      if (field === "type") set.type = raw || "work";
+      if (field === "loadMode") set.loadMode = raw || "external";
+      if (field === "durationSec") set.durationSec = raw === "" ? null : parseInt(raw, 10);
+      if (field === "assist") set.assistanceKg = raw === "" ? null : parseFloat(raw);
+      if (field === "added") set.addedWeightKg = raw === "" ? null : parseFloat(raw);
+    });
+    entry.exercises.forEach((ex) => {
+      (ex.sets || []).forEach((s) => {
+        if (LiftOS.Gym?.normalizeSetLoad) LiftOS.Gym.normalizeSetLoad(s, ex.exerciseId);
+      });
     });
     if (!W.updateHistoryEntry(entry)) {
       showToast("保存失败");
@@ -1278,6 +1358,17 @@ LiftOS.UI = (() => {
     if (!r.ok && r.reason !== "unsupported") {
       // silent fallback
     }
+  }
+
+  function toggleKeepAwake() {
+    const prefs = S.getPrefs();
+    const next = prefs.keepAwake === false;
+    S.savePrefs({ keepAwake: next });
+    const label = $("#keepAwakeLabel");
+    if (label) label.textContent = next ? "开" : "关";
+    if (!next) applyWakeLock(false);
+    else if (S.getSession() && state.screen === "training") applyWakeLock(true);
+    showToast(next ? "训练时将尝试保持亮屏" : "已关闭保持亮屏");
   }
 
   function requestUndo(i) {
@@ -1447,6 +1538,7 @@ LiftOS.UI = (() => {
   }
 
   function abandonWorkout() {
+    applyWakeLock(false);
     W.abandon();
     state.session = null;
     closeOverlay();
@@ -1456,6 +1548,7 @@ LiftOS.UI = (() => {
 
   function endWorkout() {
     closeOverlay();
+    applyWakeLock(false);
     const session = state.session || S.getSession();
     if (!session) {
       nav("home");
@@ -1512,6 +1605,7 @@ LiftOS.UI = (() => {
   }
 
   function finishSummary() {
+    applyWakeLock(false);
     const session = state.session || S.getSession();
     if (!session) {
       nav("home");
@@ -1987,7 +2081,9 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     setTheme(prefs.theme || "dark");
     state.session = S.getSession();
     const about = $("#aboutVersion");
-    if (about) about.textContent = `v${LiftOS.APP_VERSION || "0.2.1"}`;
+    if (about) about.textContent = `v${LiftOS.APP_VERSION || "0.3.0"}`;
+    const ka = $("#keepAwakeLabel");
+    if (ka) ka.textContent = prefs.keepAwake === false ? "关" : "开";
 
     $all(".range-tab").forEach((btn) => {
       btn.addEventListener("click", () => setRange(btn.dataset.range));
@@ -2060,6 +2156,12 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     checkRemoteVersion();
 
     renderHome();
+    // wake lock re-acquire when returning to visible active workout
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && S.getSession() && (S.getPrefs().keepAwake !== false)) {
+        applyWakeLock(true);
+      }
+    });
     // if session exists, home already shows resume banner
   }
 
@@ -2281,8 +2383,12 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     runPlateCalc,
     openHistoryDetail,
     saveHistoryCorrection,
+    confirmSaveHistoryCorrection,
+    confirmDeleteHistorySet,
     deleteHistorySet,
+    recalculateSessionPRs: () => W.recalculateSessionPRs(state.session),
     applyWakeLock,
+    toggleKeepAwake,
     get state() {
       return state;
     },

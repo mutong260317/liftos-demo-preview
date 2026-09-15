@@ -284,6 +284,259 @@ async function run() {
     results.push(log("home loads", (await page.locator("#todayCard").count()) > 0));
     results.push(log("free workout button", (await page.getByRole("button", { name: "开始自由训练" }).count()) > 0));
 
+    /* ===== Review Round 1 P0 fixes ===== */
+
+    // Plate nearest 102kg / 20 bar → 102.5 closer than 100
+    const plateNear = await page.evaluate(() => LiftOS.Gym.plateLoad(102, 20));
+    results.push(
+      log(
+        "plate nearest 102→102.5",
+        plateNear.ok && Math.abs(plateNear.achieved - 102.5) < 0.01,
+        JSON.stringify(plateNear)
+      )
+    );
+
+    // P0-1 legacy migration: pullup weight=10 → added_weight
+    const legacyMig = await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "4");
+      localStorage.setItem(
+        "liftos.history",
+        JSON.stringify([
+          {
+            id: "ws_legacy_bw",
+            date: LiftOS.localDateKey(),
+            planName: "PULL A",
+            volume: 80,
+            workSets: 1,
+            exercises: [
+              { exerciseId: "pullup", name: "引体向上", sets: [{ type: "work", weight: 10, reps: 8, rir: 1 }] },
+              { exerciseId: "plank", name: "平板支撑", sets: [{ type: "work", weight: 0, reps: 60, rir: null }] },
+            ],
+          },
+          {
+            id: "ws_legacy_bw0",
+            date: LiftOS.localDateKey(),
+            planName: "PULL A",
+            volume: 0,
+            workSets: 1,
+            exercises: [{ exerciseId: "pullup", name: "引体向上", sets: [{ type: "work", weight: 0, reps: 8, rir: 1 }] }],
+          },
+        ])
+      );
+      localStorage.setItem(
+        "liftos.session",
+        JSON.stringify({
+          id: "ws_act",
+          planId: "pullA",
+          planName: "PULL A",
+          startTime: Date.now(),
+          exIndex: 0,
+          exercises: [{ exerciseId: "pullup", name: "引体向上", sets: [{ id: "s1", type: "work", weight: 10, reps: null, rir: null, completed: false }], skipped: false }],
+          prs: [],
+          version: 2,
+        })
+      );
+      LiftOS.Migrations.run();
+      const hist = JSON.parse(localStorage.getItem("liftos.history"));
+      const sess = JSON.parse(localStorage.getItem("liftos.session"));
+      const h0 = hist.find((h) => h.id === "ws_legacy_bw").exercises[0].sets[0];
+      const h1 = hist.find((h) => h.id === "ws_legacy_bw0").exercises[0].sets[0];
+      const pl = hist.find((h) => h.id === "ws_legacy_bw").exercises[1].sets[0];
+      return {
+        added: h0.loadMode,
+        addedKg: h0.addedWeightKg,
+        bw0: h1.loadMode,
+        sessMode: sess.exercises[0].sets[0].loadMode,
+        plank: pl.loadMode,
+        schema: localStorage.getItem("liftos.schemaVersion"),
+      };
+    });
+    results.push(
+      log(
+        "legacy pullup +10 → added_weight",
+        legacyMig.added === "added_weight" && legacyMig.addedKg === 10 && legacyMig.sessMode === "added_weight",
+        JSON.stringify(legacyMig)
+      )
+    );
+    results.push(log("legacy pullup 0 → bodyweight", legacyMig.bw0 === "bodyweight", legacyMig.bw0));
+
+    // P0-2 dynamic add pullup mode; assisted baseline once; volume not assistance
+    const loadModes = await page.evaluate(() => {
+      localStorage.clear();
+      // fresh + seed assist history 40x8
+      localStorage.setItem("liftos.schemaVersion", "5");
+      localStorage.setItem(
+        "liftos.history",
+        JSON.stringify([
+          {
+            id: "ws_a40",
+            date: LiftOS.localDateKey(),
+            planName: "P",
+            volume: 0,
+            workSets: 1,
+            exercises: [
+              {
+                exerciseId: "pullup",
+                name: "引体",
+                sets: [{ type: "work", weight: 40, reps: 8, rir: 1, loadMode: "assisted", assistanceKg: 40 }],
+              },
+            ],
+          },
+        ])
+      );
+      LiftOS.Storage.ensureDefaults();
+      const plan = LiftOS.Plans.get("pullA");
+      const s = LiftOS.Workout.createFromPlan(plan);
+      const mode0 = LiftOS.Workout.currentEx(s).sets.find((x) => x.type === "work").loadMode;
+      // two assisted sets same session
+      const i0 = LiftOS.Workout.activeSetIndex(s);
+      const r1 = LiftOS.Workout.completeSet(s, i0, { weight: 35, reps: 8, rir: 1, loadMode: "assisted", assistanceKg: 35 });
+      LiftOS.Workout.clearRest(s);
+      const i1 = LiftOS.Workout.activeSetIndex(s);
+      const r2 = LiftOS.Workout.completeSet(s, i1, { weight: 35, reps: 8, rir: 1, loadMode: "assisted", assistanceKg: 35 });
+      LiftOS.Workout.clearRest(s);
+      const i2 = LiftOS.Workout.activeSetIndex(s);
+      const r3 = LiftOS.Workout.completeSet(s, i2, { weight: 35, reps: 6, rir: 1, loadMode: "assisted", assistanceKg: 35 });
+      LiftOS.Workout.clearRest(s);
+      const vol = LiftOS.Stats.sessionVolume(s);
+      const best = LiftOS.Stats.bestSet("pullup");
+      return {
+        mode0,
+        pr1: (r1.prs || []).map((p) => p.label),
+        pr2: (r2.prs || []).map((p) => p.label),
+        pr3: (r3.prs || []).map((p) => p.label),
+        prs: s.prs.map((p) => p.label),
+        vol,
+        best,
+      };
+    });
+    results.push(log("added/replaced pullup bodyweight mode", loadModes.mode0 === "bodyweight", loadModes.mode0));
+    results.push(
+      log(
+        "assist 35x8 improves vs 40x8",
+        loadModes.pr1.includes("New Assist PR") || loadModes.prs.includes("New Assist PR"),
+        JSON.stringify(loadModes.pr1)
+      )
+    );
+    results.push(
+      log(
+        "second same-session assist no repeated baseline/PR",
+        !(loadModes.pr2 || []).includes("Assist Baseline") && !(loadModes.pr2 || []).includes("New Assist PR"),
+        JSON.stringify(loadModes.pr2)
+      )
+    );
+    results.push(
+      log(
+        "35x6 does not beat 35x8",
+        !(loadModes.pr3 || []).includes("New Assist PR"),
+        JSON.stringify(loadModes.pr3)
+      )
+    );
+    results.push(log("assisted volume excluded from tonnage", loadModes.vol === 0, String(loadModes.vol)));
+    results.push(log("bestSet ignores assisted", !loadModes.best || loadModes.best.loadMode !== "assisted", JSON.stringify(loadModes.best)));
+
+    // P0-3 delete completed PR-bearing set recalcs later PR
+    const delPr = await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "5");
+      // history best incline 20x10
+      localStorage.setItem(
+        "liftos.history",
+        JSON.stringify([
+          {
+            id: "ws_base_in",
+            date: LiftOS.localDateKey(),
+            planName: "PUSH A",
+            volume: 600,
+            workSets: 3,
+            exercises: [
+              { exerciseId: "incline", name: "上斜", sets: [{ type: "work", weight: 20, reps: 10, rir: 1 }] },
+            ],
+          },
+        ])
+      );
+      LiftOS.Storage.ensureDefaults();
+      const plan = LiftOS.Plans.get("pushA");
+      const s = LiftOS.Workout.createFromPlan(plan);
+      let idx = LiftOS.Workout.activeSetIndex(s);
+      const ex = LiftOS.Workout.currentEx(s);
+      while (idx >= 0 && ex.sets[idx].type === "warmup") {
+        LiftOS.Workout.completeSet(s, idx, { weight: 10, reps: 12, rir: null });
+        LiftOS.Workout.clearRest(s);
+        idx = LiftOS.Workout.activeSetIndex(s);
+      }
+      // set1 23x10 = weight PR; set2 23x9 no PR
+      LiftOS.Workout.completeSet(s, idx, { weight: 23, reps: 10, rir: 1 });
+      LiftOS.Workout.clearRest(s);
+      const idx2 = LiftOS.Workout.activeSetIndex(s);
+      LiftOS.Workout.completeSet(s, idx2, { weight: 23, reps: 9, rir: 1 });
+      LiftOS.Workout.clearRest(s);
+      const prsBefore = s.prs.map((p) => p.label);
+      const workIdxs = ex.sets.map((st, i) => ({ st, i })).filter(({ st }) => LiftOS.Stats.isWork(st) && st.completed);
+      const firstWork = workIdxs[0].i;
+      LiftOS.Workout.deleteCompletedSet(s, firstWork);
+      const prsAfter = (s.prs || []).map((p) => p.label);
+      const stillWeightPr = prsAfter.filter((l) => l === "New Weight PR").length;
+      return { prsBefore, prsAfter, stillWeightPr, workSets: LiftOS.Stats.workSetCount(s) };
+    });
+    results.push(
+      log(
+        "delete completed set recalcs PRs",
+        delPr.prsBefore.filter((l) => l === "New Weight PR").length >= 1 &&
+          delPr.stillWeightPr === 1 &&
+          delPr.workSets === 1,
+        JSON.stringify(delPr)
+      )
+    );
+
+    // P0-4 history correction volume uses setVolume + confirmation path + no dup
+    const histCorr = await page.evaluate(() => {
+      localStorage.clear();
+      localStorage.setItem("liftos.schemaVersion", "5");
+      localStorage.setItem(
+        "liftos.history",
+        JSON.stringify([
+          {
+            id: "ws_corr",
+            date: LiftOS.localDateKey(),
+            planName: "P",
+            volume: 100,
+            workSets: 1,
+            prs: 0,
+            exercises: [
+              {
+                exerciseId: "pullup",
+                name: "引体",
+                sets: [
+                  { type: "work", weight: 40, reps: 8, rir: 1, loadMode: "assisted", assistanceKg: 40 },
+                  { type: "work", weight: 20, reps: 10, rir: 1, loadMode: "external" },
+                ],
+              },
+            ],
+          },
+        ])
+      );
+      const entry = JSON.parse(localStorage.getItem("liftos.history"))[0];
+      entry.exercises[0].sets[0].assistanceKg = 30;
+      entry.exercises[0].sets[0].weight = 30;
+      LiftOS.Workout.updateHistoryEntry(entry);
+      const after = JSON.parse(localStorage.getItem("liftos.history"))[0];
+      return { len: JSON.parse(localStorage.getItem("liftos.history")).length, volume: after.volume, workSets: after.workSets };
+    });
+    results.push(
+      log(
+        "history correction volume load-aware + no dup",
+        histCorr.len === 1 && histCorr.volume === 200 && histCorr.workSets === 2,
+        JSON.stringify(histCorr)
+      )
+    );
+
+    // P0-5 keepAwake toggle exists
+    await page.goto(INDEX, { waitUntil: "load" });
+    await page.waitForTimeout(200);
+    results.push(log("keepAwake toggle in profile UI", (await page.locator("#btnKeepAwake").count()) > 0));
+
     await page.screenshot({ path: path.join(OUT, "final.png") });
   } catch (err) {
     results.push(log("suite error", false, err.message || String(err)));

@@ -103,25 +103,102 @@ LiftOS.Gym = (() => {
     });
   }
 
-  /** Plate loading per side. barWeight default 20. plates descending. */
+  /**
+   * Canonical load-mode invariant:
+   * external: weight = external load; assistance/added null
+   * bodyweight: weight = 0; assistance/added null
+   * added_weight: addedWeightKg canonical; weight mirrors it
+   * assisted: assistanceKg only (weight mirrors for display); not lifted load
+   */
+  function normalizeSetLoad(set, exerciseId) {
+    const mode = set.loadMode || defaultLoadMode(exerciseId);
+    set.loadMode = mode;
+    if (set.durationSec == null) set.durationSec = null;
+    if (mode === "bodyweight") {
+      set.weight = 0;
+      set.assistanceKg = null;
+      set.addedWeightKg = null;
+      return set;
+    }
+    if (mode === "added_weight") {
+      if (set.addedWeightKg == null) set.addedWeightKg = Number(set.weight) || 0;
+      set.weight = Number(set.addedWeightKg) || 0;
+      set.assistanceKg = null;
+      return set;
+    }
+    if (mode === "assisted") {
+      if (set.assistanceKg == null) set.assistanceKg = Number(set.weight) || 0;
+      set.weight = Number(set.assistanceKg) || 0;
+      set.addedWeightKg = null;
+      return set;
+    }
+    if (set.weight == null) set.weight = 0;
+    set.assistanceKg = null;
+    set.addedWeightKg = null;
+    return set;
+  }
+
+  function inferLegacyLoadMode(exerciseId, set) {
+    const m = LiftOS.getExercise(exerciseId);
+    const w = Number(set?.weight) || 0;
+    if (m?.metricType === "duration") return "bodyweight";
+    if (m?.equipment === "bodyweight") {
+      return w > 0 ? "added_weight" : "bodyweight";
+    }
+    return "external";
+  }
+
+  function applyLegacySetFields(exerciseId, set) {
+    if (!set.type) set.type = "work";
+    if (set.durationSec == null) set.durationSec = null;
+    if (!set.loadMode) set.loadMode = inferLegacyLoadMode(exerciseId, set);
+    if (set.loadMode === "added_weight" && set.addedWeightKg == null) {
+      set.addedWeightKg = Number(set.weight) || 0;
+    }
+    if (set.assistanceKg == null) set.assistanceKg = null;
+    return normalizeSetLoad(set, exerciseId);
+  }
+
+  /** True nearest achievable plate total (DP). */
   function plateLoad(totalWeight, barWeight = 20, plates = [25, 20, 15, 10, 5, 2.5, 1.25]) {
-    if (totalWeight < barWeight) {
+    if (!(totalWeight > 0) || !(barWeight > 0)) {
+      return { ok: false, error: "请输入有效重量" };
+    }
+    if (totalWeight < barWeight - 1e-9) {
       return { ok: false, error: "目标低于杠铃自重", nearest: barWeight, perSide: [] };
     }
-    let perSide = (totalWeight - barWeight) / 2;
-    // snap to 0.25
-    perSide = Math.round(perSide * 4) / 4;
-    const remaining = perSide;
+    const step = 0.25;
+    const targetSide = (totalWeight - barWeight) / 2;
+    const maxSteps = Math.ceil(targetSide / step) + 200;
+    const reachable = new Uint8Array(maxSteps + 1);
+    reachable[0] = 1;
+    for (const p of plates) {
+      const units = Math.round(p / step);
+      for (let i = units; i <= maxSteps; i++) {
+        if (reachable[i - units]) reachable[i] = 1;
+      }
+    }
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i <= maxSteps; i++) {
+      if (!reachable[i]) continue;
+      const total = barWeight + i * step * 2;
+      const dist = Math.abs(total - totalWeight);
+      if (dist < bestDist - 1e-9) {
+        bestDist = dist;
+        bestIdx = i;
+      }
+    }
+    const perSideTarget = bestIdx * step;
+    let left = perSideTarget;
     const out = [];
-    let left = remaining;
     for (const p of plates) {
       while (left >= p - 1e-9) {
         out.push(p);
-        left = Math.round((left - p) * 1000) / 1000;
+        left = Math.round((left - p) * 100) / 100;
       }
     }
-    const built = out.reduce((a, b) => a + b, 0);
-    const achieved = Math.round((barWeight + built * 2) * 100) / 100;
+    const achieved = Math.round((barWeight + perSideTarget * 2) * 100) / 100;
     const exact = Math.abs(achieved - totalWeight) < 0.01;
     return {
       ok: true,
@@ -137,6 +214,9 @@ LiftOS.Gym = (() => {
     LOAD_MODES,
     SET_TYPES,
     defaultLoadMode,
+    normalizeSetLoad,
+    inferLegacyLoadMode,
+    applyLegacySetFields,
     priorWorkoutSets,
     previousSetForIndex,
     formatLoad,

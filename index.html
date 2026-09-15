@@ -201,6 +201,12 @@
                 <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 21V9M7 14l5-5 5 5"/><path d="M5 3h14"/></svg></div>
                 <span class="label">导入备份</span><span class="value">恢复 JSON</span><span class="chev">›</span>
               </button>
+              <button class="settings-item" id="btnKeepAwake" onclick="App.toggleKeepAwake()">
+                <div class="icon"><svg viewBox="0 0 24 24"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></div>
+                <span class="label">训练时保持亮屏</span>
+                <span class="value" id="keepAwakeLabel">开</span>
+                <span class="chev">›</span>
+              </button>
               <button class="settings-item" onclick="App.showToast('LiftOS V' + (window.LiftOS?.APP_VERSION || '0.3.0'))">
                 <div class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg></div>
                 <span class="label">关于</span><span class="value" id="aboutVersion">v0.3.0</span><span class="chev">›</span>

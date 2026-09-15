@@ -179,29 +179,42 @@ LiftOS.Workout = (() => {
     const newPrs = [];
     if (S().isWork(set) && !isDuration) {
       const liveRows = S().sessionBaseline(session, ex.exerciseId, set.id);
-      const prior = S().detectSetPRs(ex.exerciseId, set, liveRows);
-      // assisted: prefer less assistance at equal/better reps
       if (set.loadMode === "assisted") {
-        const priorBestAssist = (S().exerciseHistory(ex.exerciseId, liveRows) || []).flatMap((r) =>
-          r.sets.filter((x) => x.loadMode === "assisted" && x.reps)
+        // Compare only assisted sets; prefer less assistance at equal/better reps
+        const assistedHistory = (S().exerciseHistory(ex.exerciseId, liveRows) || [])
+          .flatMap((r) => r.sets.filter((x) => x.loadMode === "assisted" && x.reps));
+        // exclude current set from baseline (sessionBaseline already stops before set.id)
+        const minAssistEntry = assistedHistory.reduce((best, x) => {
+          const a = Number(x.assistanceKg ?? x.weight) || 0;
+          if (!best) return { assist: a, reps: x.reps };
+          if (a < best.assist - 1e-9) return { assist: a, reps: x.reps };
+          if (Math.abs(a - best.assist) < 1e-9 && x.reps > best.reps) return { assist: a, reps: x.reps };
+          return best;
+        }, null);
+        const assist = Number(set.assistanceKg) || 0;
+        const alreadyBaseline = session.prs?.some(
+          (p) => p.exerciseId === ex.exerciseId && p.type === "assisted" && p.label === "Assist Baseline"
         );
-        const minAssist = priorBestAssist.length
-          ? Math.min(...priorBestAssist.map((x) => Number(x.assistanceKg ?? x.weight) || 0))
-          : null;
-        if (minAssist != null && Number(set.assistanceKg) < minAssist && set.reps >= (priorBestAssist[0]?.reps || 0)) {
-          newPrs.push({
-            type: "assisted",
-            label: "New Assist PR",
-            detail: `辅助 ${set.assistanceKg}kg × ${set.reps}`,
-          });
-        } else if (minAssist == null) {
+        if (!minAssistEntry && !alreadyBaseline) {
           newPrs.push({
             type: "assisted",
             label: "Assist Baseline",
-            detail: `辅助 ${set.assistanceKg}kg × ${set.reps}`,
+            detail: `辅助 ${assist}kg × ${set.reps}`,
           });
+        } else if (minAssistEntry) {
+          const betterAssist = assist < minAssistEntry.assist - 1e-9 && set.reps >= minAssistEntry.reps;
+          const sameAssistMoreReps = Math.abs(assist - minAssistEntry.assist) < 1e-9 && set.reps > minAssistEntry.reps;
+          // 35kg×6 should not beat 40kg×8 incorrectly: only if assist lower AND reps >=, or same assist more reps
+          if (betterAssist || sameAssistMoreReps) {
+            newPrs.push({
+              type: "assisted",
+              label: "New Assist PR",
+              detail: `辅助 ${assist}kg × ${set.reps}`,
+            });
+          }
         }
       } else {
+        const prior = S().detectSetPRs(ex.exerciseId, set, liveRows);
         prior.forEach((p) => {
           newPrs.push({
             ...p,
@@ -214,7 +227,9 @@ LiftOS.Workout = (() => {
         });
       }
       session.prs = session.prs || [];
-      newPrs.forEach((p) => session.prs.push(p));
+      newPrs.forEach((p) => {
+        session.prs.push({ ...p, setId: p.setId || set.id, exerciseId: ex.exerciseId, exerciseName: ex.name });
+      });
     }
 
     // rest: skip on final work set of exercise
@@ -283,7 +298,10 @@ LiftOS.Workout = (() => {
     const bw = LiftOS.isBodyweight(exerciseId);
     const sets = [];
     for (let i = 0; i < pe.workSets; i++) {
-      sets.push(makeSet("work", i + 1, bw ? 0 : weight));
+      const s = makeSet("work", i + 1, bw ? 0 : weight);
+      s.loadMode = LiftOS.Gym?.defaultLoadMode(exerciseId) || (bw ? "bodyweight" : "external");
+      LiftOS.Gym?.normalizeSetLoad(s, exerciseId);
+      sets.push(s);
     }
     session.exercises.push({
       id: uid("ex"),
@@ -323,7 +341,10 @@ LiftOS.Workout = (() => {
     const bw = LiftOS.isBodyweight(newExerciseId);
     const sets = [];
     for (let i = 0; i < pe.workSets; i++) {
-      sets.push(makeSet("work", i + 1, bw ? 0 : weight));
+      const s = makeSet("work", i + 1, bw ? 0 : weight);
+      s.loadMode = LiftOS.Gym?.defaultLoadMode(newExerciseId) || (bw ? "bodyweight" : "external");
+      LiftOS.Gym?.normalizeSetLoad(s, newExerciseId);
+      sets.push(s);
     }
 
     const idx = session.exIndex;
@@ -439,17 +460,79 @@ LiftOS.Workout = (() => {
     return { ok: true };
   }
 
+  /** Replay remaining completed sets against history baseline to rebuild session PRs. */
+  function recalculateSessionPRs(session) {
+    session.prs = [];
+    (session.exercises || []).forEach((ex) => {
+      if (ex.skipped) return;
+      (ex.sets || []).forEach((set) => {
+        if (!set.completed || !S().isWork(set)) return;
+        if (set.durationSec != null && set.reps == null) return;
+        const liveRows = S().sessionBaseline(session, ex.exerciseId, set.id);
+        if (set.loadMode === "assisted") {
+          const assistedHistory = (S().exerciseHistory(ex.exerciseId, liveRows) || [])
+            .flatMap((r) => r.sets.filter((x) => x.loadMode === "assisted" && x.reps));
+          const minAssistEntry = assistedHistory.reduce((best, x) => {
+            const a = Number(x.assistanceKg ?? x.weight) || 0;
+            if (!best) return { assist: a, reps: x.reps };
+            if (a < best.assist - 1e-9) return { assist: a, reps: x.reps };
+            if (Math.abs(a - best.assist) < 1e-9 && x.reps > best.reps) return { assist: a, reps: x.reps };
+            return best;
+          }, null);
+          const assist = Number(set.assistanceKg) || 0;
+          const alreadyBaseline = session.prs.some(
+            (p) => p.exerciseId === ex.exerciseId && p.label === "Assist Baseline"
+          );
+          if (!minAssistEntry && !alreadyBaseline) {
+            session.prs.push({
+              type: "assisted",
+              label: "Assist Baseline",
+              detail: `辅助 ${assist}kg × ${set.reps}`,
+              setId: set.id,
+              exerciseId: ex.exerciseId,
+              exerciseName: ex.name,
+            });
+          } else if (minAssistEntry) {
+            const betterAssist = assist < minAssistEntry.assist - 1e-9 && set.reps >= minAssistEntry.reps;
+            const sameAssistMoreReps = Math.abs(assist - minAssistEntry.assist) < 1e-9 && set.reps > minAssistEntry.reps;
+            if (betterAssist || sameAssistMoreReps) {
+              session.prs.push({
+                type: "assisted",
+                label: "New Assist PR",
+                detail: `辅助 ${assist}kg × ${set.reps}`,
+                setId: set.id,
+                exerciseId: ex.exerciseId,
+                exerciseName: ex.name,
+              });
+            }
+          }
+        } else {
+          const prior = S().detectSetPRs(ex.exerciseId, set, liveRows);
+          prior.forEach((p) => {
+            session.prs.push({
+              ...p,
+              setId: set.id,
+              exerciseId: ex.exerciseId,
+              exerciseName: ex.name,
+            });
+          });
+        }
+      });
+    });
+    save(session);
+    return session.prs;
+  }
+
   function deleteCompletedSet(session, setIdx) {
     const ex = currentEx(session);
     if (!ex || !ex.sets[setIdx]) return { ok: false, error: "no set" };
     const set = ex.sets[setIdx];
     if (!set.completed) return { ok: false, error: "not completed" };
-    // recalc: remove PRs linked to set
-    session.prs = (session.prs || []).filter((p) => p.setId !== set.id);
     ex.sets.splice(setIdx, 1);
     renumberSets(ex);
+    recalculateSessionPRs(session);
     save(session);
-    return { ok: true };
+    return { ok: true, prs: session.prs };
   }
 
   /** Copy immediately previous completed set in this exercise into current set. */
@@ -503,19 +586,43 @@ LiftOS.Workout = (() => {
     const hist = St().getHistory();
     const i = hist.findIndex((h) => h.id === entry.id);
     if (i < 0) return false;
-    // recompute volume/workSets from sets
     let volume = 0;
     let workSets = 0;
     (entry.exercises || []).forEach((ex) => {
       (ex.sets || []).forEach((s) => {
         if (S().isWork(s)) {
           workSets += 1;
-          volume += (Number(s.weight) || 0) * (Number(s.reps) || 0);
+          volume += S().setVolume(s);
         }
       });
     });
     entry.volume = Math.round(volume);
     entry.workSets = workSets;
+    // recompute PR presentation count from remaining sets vs prior history excluding this entry
+    const otherHistory = hist.filter((h) => h.id !== entry.id);
+    let prCount = 0;
+    (entry.exercises || []).forEach((ex) => {
+      (ex.sets || []).forEach((s) => {
+        if (!S().isWork(s) || s.loadMode === "assisted") {
+          if (s.loadMode === "assisted" && s.reps) {
+            // count assist improvements only vs other history
+            const prior = otherHistory.flatMap((h) =>
+              (h.exercises || [])
+                .filter((e) => e.exerciseId === ex.exerciseId)
+                .flatMap((e) => (e.sets || []).filter((x) => x.loadMode === "assisted"))
+            );
+            if (prior.length) {
+              const minA = Math.min(...prior.map((x) => Number(x.assistanceKg ?? x.weight) || 0));
+              if ((Number(s.assistanceKg) || 0) < minA && s.reps >= 1) prCount += 1;
+            }
+          }
+          return;
+        }
+        const detected = S().detectSetPRs(ex.exerciseId, { ...s, completed: true }, otherHistory.filter((h) => true).map((h) => ({ exercises: h.exercises })));
+        if (detected.length) prCount += detected.length;
+      });
+    });
+    entry.prs = prCount;
     hist[i] = entry;
     St().saveHistory(hist);
     return true;
@@ -614,6 +721,7 @@ LiftOS.Workout = (() => {
     addSet,
     deleteSet,
     deleteCompletedSet,
+    recalculateSessionPRs,
     copyPreviousCompletedSet,
     copyPriorWorkoutSet,
     setSetType,

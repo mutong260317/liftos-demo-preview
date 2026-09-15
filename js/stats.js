@@ -28,13 +28,13 @@ LiftOS.Stats = (() => {
 
   function setVolume(set) {
     if (!isWork(set)) return 0;
-    const w = Number(set.weight) || Number(set.addedWeightKg) || 0;
-    const r = Number(set.reps) || 0;
-    // assisted: count assistance mass as load proxy only if no external weight
-    if (set.loadMode === "assisted") {
-      const assist = Number(set.assistanceKg) || 0;
-      return Math.max(0, assist) * r;
+    // assisted: assistance is NOT lifted load — exclude from kg tonnage
+    if (set.loadMode === "assisted") return 0;
+    if (set.loadMode === "added_weight") {
+      return (Number(set.addedWeightKg) || Number(set.weight) || 0) * (Number(set.reps) || 0);
     }
+    const w = Number(set.weight) || 0;
+    const r = Number(set.reps) || 0;
     return w * r;
   }
 
@@ -118,7 +118,16 @@ LiftOS.Stats = (() => {
         rows.unshift({
           date: new Date(s.startTime || Date.now()).toISOString().slice(0, 10),
           planName: s.planName,
-          sets: work.map((x) => ({ type: x.type, weight: x.weight, reps: x.reps, rir: x.rir })),
+          sets: work.map((x) => ({
+            type: x.type,
+            weight: x.weight,
+            reps: x.reps,
+            rir: x.rir,
+            loadMode: x.loadMode,
+            assistanceKg: x.assistanceKg,
+            addedWeightKg: x.addedWeightKg,
+            durationSec: x.durationSec,
+          })),
         });
       });
     });
@@ -132,11 +141,18 @@ LiftOS.Stats = (() => {
     rows.forEach((r) => {
       r.sets.forEach((s) => {
         if (s.reps == null || s.reps <= 0) return;
-        // bodyweight allows weight=0; loaded lifts require positive weight
-        if (s.weight == null || (!isBW && s.weight <= 0)) return;
-        if (isBW && s.weight < 0) return;
-        if (!best || s.weight > best.weight || (s.weight === best.weight && s.reps > best.reps)) {
-          best = { weight: s.weight, reps: s.reps, date: r.date };
+        // assisted is not a strength best in kg
+        if (s.loadMode === "assisted") return;
+        const load = s.loadMode === "added_weight" ? Number(s.addedWeightKg) || Number(s.weight) || 0 : Number(s.weight) || 0;
+        if (s.loadMode === "bodyweight" || (isBW && load === 0)) {
+          if (!best || load > best.weight || (load === best.weight && s.reps > best.reps)) {
+            best = { weight: 0, reps: s.reps, date: r.date, loadMode: "bodyweight" };
+          }
+          return;
+        }
+        if (load <= 0) return;
+        if (!best || load > best.weight || (load === best.weight && s.reps > best.reps)) {
+          best = { weight: load, reps: s.reps, date: r.date, loadMode: s.loadMode || "external" };
         }
       });
     });
@@ -363,7 +379,17 @@ LiftOS.Stats = (() => {
       for (const s of ex.sets) {
         if (!isWork(s) || !s.completed) continue;
         if (beforeSetId && s.id === beforeSetId) break;
-        sets.push({ type: s.type, weight: s.weight, reps: s.reps, rir: s.rir, completed: true });
+        sets.push({
+          type: s.type,
+          weight: s.weight,
+          reps: s.reps,
+          rir: s.rir,
+          loadMode: s.loadMode,
+          assistanceKg: s.assistanceKg,
+          addedWeightKg: s.addedWeightKg,
+          durationSec: s.durationSec,
+          completed: true,
+        });
       }
     });
     if (!sets.length) return [];
