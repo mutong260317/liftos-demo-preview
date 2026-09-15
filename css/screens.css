@@ -58,3 +58,18 @@
 .resume-banner .label { font-size: var(--fs-caption); color: var(--accent); font-weight: 600; }
 .resume-banner .name { font-weight: 700; font-size: var(--fs-body); margin-top: 2px; }
 .resume-banner .time { font-size: var(--fs-secondary); color: var(--text-secondary); }
+
+.update-banner {
+  background: var(--warning-soft);
+  border: 1px solid rgba(245, 165, 36, 0.35);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.update-banner .info { flex: 1; min-width: 0; }
+.update-banner .label { font-size: var(--fs-caption); color: var(--warning); font-weight: 600; }
+.update-banner .name { font-weight: 700; font-size: var(--fs-body); margin-top: 2px; }
+.update-banner .time { font-size: var(--fs-secondary); color: var(--text-secondary); }

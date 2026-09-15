@@ -2,7 +2,7 @@ name: QA
 
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main, "feature/**", "hotfix/**"]
   pull_request:
     branches: [main]
 
@@ -22,3 +22,5 @@ jobs:
         run: node scripts/qa-v02.js
       - name: Run review-fix suite
         run: node scripts/qa-review-fixes.js
+      - name: Run V0.2.1 data safety suite
+        run: node scripts/qa-v021-data-safety.js

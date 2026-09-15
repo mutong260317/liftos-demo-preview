@@ -1,65 +1,65 @@
-# LiftOS / 训练OS — V0.2 Functional Prototype
+﻿# LiftOS / 璁粌OS 鈥?V0.2.1 Real Data Safety
 
-Mobile-first 力量训练 Logger。本分支把 V0.1 的可点击 Demo 升级为**可真实训练记录**的功能原型。
+Mobile-first 鍔涢噺璁粌 Logger銆傛湰鍒嗘敮鎶?V0.1 鐨勫彲鐐瑰嚮 Demo 鍗囩骇涓?*鍙湡瀹炶缁冭褰?*鐨勫姛鑳藉師鍨嬨€?
 
-## 原则
+## 鍘熷垯
 
-**数据真实性 > 演示效果。** 建议值与真实记录严格分离；Session 持久化；计划可真正启动。
+**鏁版嵁鐪熷疄鎬?> 婕旂ず鏁堟灉銆?* 寤鸿鍊间笌鐪熷疄璁板綍涓ユ牸鍒嗙锛汼ession 鎸佷箙鍖栵紱璁″垝鍙湡姝ｅ惎鍔ㄣ€?
 
-## 技术栈
+## 鎶€鏈爤
 
-- Vanilla JS（模块拆分，无构建）
-- localStorage 持久化
-- PWA（manifest + Service Worker）
-- Playwright QA（本地 Edge）
+- Vanilla JS锛堟ā鍧楁媶鍒嗭紝鏃犳瀯寤猴級
+- localStorage 鎸佷箙鍖?
+- PWA锛坢anifest + Service Worker锛?
+- Playwright QA锛堟湰鍦?Edge锛?
 
-## 本地运行
+## 鏈湴杩愯
 
 ```bash
-# 直接打开（推荐，file:// 即可）
+# 鐩存帴鎵撳紑锛堟帹鑽愶紝file:// 鍗冲彲锛?
 index.html
 
-# 或
+# 鎴?
 npx serve .
 ```
 
-建议视口 **393 × 852**。
+寤鸿瑙嗗彛 **393 脳 852**銆?
 
-## 项目结构
+## 椤圭洰缁撴瀯
 
 ```
 .
-├── index.html
-├── css/
-│   ├── tokens.css
-│   ├── base.css
-│   ├── components.css
-│   ├── training.css
-│   └── screens.css
-├── js/
-│   ├── data.js          # Exercise Master + seed history
-│   ├── storage.js       # localStorage
-│   ├── stats.js         # e1RM / volume / PR / range
-│   ├── progression.js   # Double Progression 规则
-│   ├── plans.js         # WorkoutPlan CRUD
-│   ├── workout.js       # WorkoutSession
-│   └── app.js           # UI controller
-├── icons/
-├── manifest.json
-├── sw.js
-├── scripts/qa-v02.js
-└── DESIGN.md
+鈹溾攢鈹€ index.html
+鈹溾攢鈹€ css/
+鈹?  鈹溾攢鈹€ tokens.css
+鈹?  鈹溾攢鈹€ base.css
+鈹?  鈹溾攢鈹€ components.css
+鈹?  鈹溾攢鈹€ training.css
+鈹?  鈹斺攢鈹€ screens.css
+鈹溾攢鈹€ js/
+鈹?  鈹溾攢鈹€ data.js          # Exercise Master + seed history
+鈹?  鈹溾攢鈹€ storage.js       # localStorage
+鈹?  鈹溾攢鈹€ stats.js         # e1RM / volume / PR / range
+鈹?  鈹溾攢鈹€ progression.js   # Double Progression 瑙勫垯
+鈹?  鈹溾攢鈹€ plans.js         # WorkoutPlan CRUD
+鈹?  鈹溾攢鈹€ workout.js       # WorkoutSession
+鈹?  鈹斺攢鈹€ app.js           # UI controller
+鈹溾攢鈹€ icons/
+鈹溾攢鈹€ manifest.json
+鈹溾攢鈹€ sw.js
+鈹溾攢鈹€ scripts/qa-v02.js
+鈹斺攢鈹€ DESIGN.md
 ```
 
-## 关键行为
+## 鍏抽敭琛屼负
 
-- 完成组前必须填写真实 reps；RIR 默认「未记录」
-- 每完成/修改一组立即写入 localStorage；刷新可「继续训练」
-- 替换动作需确认参数，备注按 exerciseId 独立
-- 已完成组可 Undo
-- 计划可新建/删除并持久化
-- Dashboard 时间筛选基于真实 history
-- 提示为规则引擎（Double Progression），非 AI
+- 瀹屾垚缁勫墠蹇呴』濉啓鐪熷疄 reps锛汻IR 榛樿銆屾湭璁板綍銆?
+- 姣忓畬鎴?淇敼涓€缁勭珛鍗冲啓鍏?localStorage锛涘埛鏂板彲銆岀户缁缁冦€?
+- 鏇挎崲鍔ㄤ綔闇€纭鍙傛暟锛屽娉ㄦ寜 exerciseId 鐙珛
+- 宸插畬鎴愮粍鍙?Undo
+- 璁″垝鍙柊寤?鍒犻櫎骞舵寔涔呭寲
+- Dashboard 鏃堕棿绛涢€夊熀浜庣湡瀹?history
+- 鎻愮ず涓鸿鍒欏紩鎿庯紙Double Progression锛夛紝闈?AI
 
 ## QA
 
@@ -67,3 +67,4 @@ npx serve .
 node scripts/qa-v02.js
 # 44/44 PASS
 ```
+

@@ -9,6 +9,7 @@ const path = require("path");
 const OUT = path.join(__dirname, "output", "qa-review");
 const ROOT = path.dirname(__dirname);
 const INDEX = "file:///" + ROOT.replace(/\\/g, "/") + "/index.html";
+const DEMO_INDEX = INDEX + "?demo=1";
 
 function log(step, ok, detail = "") {
   console.log(`${ok ? "PASS" : "FAIL"}  ${step}${detail ? " — " + detail : ""}`);
@@ -51,9 +52,9 @@ async function run() {
   page.setDefaultTimeout(8000);
 
   try {
-    await page.goto(INDEX, { waitUntil: "domcontentloaded" });
+    await page.goto(DEMO_INDEX, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => localStorage.clear());
-    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.goto(DEMO_INDEX, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(300);
 
     // --- Issue 3: seed dates recent + localDateKey ---
