@@ -11,11 +11,16 @@ desktop.ini
 
 # Node / deploy
 node_modules/
+package.json
+package-lock.json
 .vercel/
 .netlify/
 .env
 .env.*
 !.env.example
+
+# QA artifacts
+scripts/output/
 
 # Logs
 *.log
