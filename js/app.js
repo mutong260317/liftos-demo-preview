@@ -363,7 +363,7 @@ LiftOS.UI = (() => {
           .join("")}
       </div>
       <button class="btn btn-secondary btn-block mt-3" onclick="App.setLibraryMode('addToPlan','${planId}')">+ 添加动作</button>
-      <button class="btn btn-primary btn-block btn-lg mt-3" onclick="App.startWorkoutFromPlan('${planId}')">用此计划开始</button>
+      <button class="btn btn-primary btn-block btn-lg" onclick="App.startWorkoutFromPlan('${planId}')">用此计划开始</button>
       <button class="btn btn-danger btn-block mt-2" onclick="App.confirmDeletePlan('${planId}')">删除计划</button>
     `;
     openSubpage("subpage-plan");
@@ -1027,7 +1027,7 @@ LiftOS.UI = (() => {
 
   function stepDuration(i, d) {
     const set = W.currentEx(state.session).sets[i];
-    set.durationSec = Math.max(0, (Number(set.durationSec) || 0) + d;
+    set.durationSec = Math.max(0, (Number(set.durationSec) || 0) + d);
     W.save(state.session);
     const el = $("#dDisplay");
     if (el) el.textContent = set.durationSec;
