@@ -78,7 +78,7 @@ async function run() {
         JSON.stringify(fresh.notes)
       )
     );
-    results.push(log("schemaVersion stamped", fresh.schema === 4, String(fresh.schema)));
+    results.push(log("schemaVersion stamped", fresh.schema === 5, String(fresh.schema)));
     results.push(log("no global seed flag written", fresh.hasSeedFlag === false));
 
     // data empty state
@@ -155,7 +155,7 @@ async function run() {
     results.push(log("edited note kept", /膝盖内扣/.test(migrated.notes.hack_squat || ""), migrated.notes.hack_squat));
     results.push(log("custom plan kept", migrated.plans.includes("MY CUSTOM")));
     results.push(log("active session kept", !!migrated.session && migrated.session.id === "ws_active_1"));
-    results.push(log("schema is 4", migrated.schema === 4, String(migrated.schema)));
+    results.push(log("schema is 4", migrated.schema === 5, String(migrated.schema)));
 
     // idempotent second run
     await page.reload({ waitUntil: "load" });
@@ -175,7 +175,7 @@ async function run() {
         exported.exportVersion === 1 &&
           Array.isArray(exported.history) &&
           Array.isArray(exported.plans) &&
-          exported.appVersion === "0.2.1",
+          exported.appVersion === "0.3.0",
         `v=${exported.appVersion} hist=${exported.history.length}`
       )
     );
@@ -215,12 +215,12 @@ async function run() {
     // 13 version.json file exists + parse
     const versionFile = fs.readFileSync(path.join(ROOT, "version.json"), "utf8");
     const vj = JSON.parse(versionFile);
-    results.push(log("version.json", vj.version === "0.2.1", vj.version));
-    results.push(log("APP_VERSION const", (await page.evaluate(() => LiftOS.APP_VERSION)) === "0.2.1"));
+    results.push(log("version.json", vj.version === "0.3.0", vj.version));
+    results.push(log("APP_VERSION const", (await page.evaluate(() => LiftOS.APP_VERSION)) === "0.3.0"));
 
     // 14 SW cache version string
     const sw = fs.readFileSync(path.join(ROOT, "sw.js"), "utf8");
-    results.push(log("SW cache versioned", sw.includes('const CACHE = "liftos-v0.2.1"')));
+    results.push(log("SW cache versioned", sw.includes('const CACHE = "liftos-v0.3.0"')));
     results.push(log("SW handles SKIP_WAITING", sw.includes("SKIP_WAITING")));
 
     // 15 update available detection (unit)
@@ -444,7 +444,7 @@ async function run() {
       log(
         "Test F schema3 import migrates to 4",
         testF.result.ok === true &&
-          testF.schema === "4" &&
+          testF.schema === "5" &&
           testF.hasKeep === true &&
           testF.hasSeed === false &&
           (testF.notes.incline == null || testF.notes.incline === "") &&
@@ -462,7 +462,7 @@ async function run() {
       const result = LiftOS.Storage.importPayload(payload);
       return { result, has: LiftOS.Storage.getHistory().some((h) => h.id === "ws_g_ok"), schema: localStorage.getItem("liftos.schemaVersion") };
     });
-    results.push(log("Test G valid import succeeds", testG.result.ok === true && testG.has && testG.schema === "4", JSON.stringify(testG.result)));
+    results.push(log("Test G valid import succeeds", testG.result.ok === true && testG.has && testG.schema === "5", JSON.stringify(testG.result)));
 
     // Test H — post-import integrity failure rolls back
     const testH = await page.evaluate(() => {

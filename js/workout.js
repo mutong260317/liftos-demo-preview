@@ -30,14 +30,24 @@ LiftOS.Workout = (() => {
   function makeSet(type, num, weight) {
     return {
       id: uid("set"),
-      type, // warmup | work | drop | failure
+      type, // warmup | work | drop | failure | amrap
       num,
       weight: weight ?? null,
       reps: null,
       rir: null,
+      durationSec: null,
+      loadMode: "external",
+      assistanceKg: null,
+      addedWeightKg: null,
       completed: false,
       completedAt: null,
     };
+  }
+
+  function isLastWorkSetOfExercise(ex, setIdx) {
+    const workIdxs = ex.sets.map((s, i) => ({ s, i })).filter(({ s }) => S().isWork(s));
+    if (!workIdxs.length) return true;
+    return workIdxs[workIdxs.length - 1].i === setIdx;
   }
 
   /** Build a fresh session from a real plan. */
@@ -58,7 +68,9 @@ LiftOS.Workout = (() => {
           sets.push(makeSet("warmup", 0, warm));
         }
         for (let i = 0; i < pe.workSets; i++) {
-          sets.push(makeSet("work", i + 1, bw ? 0 : weight));
+          const s = makeSet("work", i + 1, bw ? 0 : weight);
+          s.loadMode = LiftOS.Gym?.defaultLoadMode(pe.exerciseId) || (bw ? "bodyweight" : "external");
+          sets.push(s);
         }
         return {
           id: uid("ex"),
@@ -84,6 +96,7 @@ LiftOS.Workout = (() => {
       id: uid("ws"),
       planId: plan.id,
       planName: plan.name,
+      source: "plan",
       startTime: Date.now(),
       endTime: null,
       exIndex: 0,
@@ -125,7 +138,7 @@ LiftOS.Workout = (() => {
     return set.weight != null && set.reps != null && set.reps > 0;
   }
 
-  /** Core: mark set complete. Must have real reps. RIR optional. */
+  /** Core: mark set complete. Must have real reps (or duration). RIR optional. */
   function completeSet(session, setIdx, payload) {
     const ex = currentEx(session);
     if (!ex) return { ok: false, error: "no exercise" };
@@ -134,51 +147,92 @@ LiftOS.Workout = (() => {
 
     if (payload?.weight != null) set.weight = payload.weight;
     if (payload?.reps != null) set.reps = payload.reps;
-    if (payload?.rir !== undefined) set.rir = payload.rir; // null allowed = 未记录
+    if (payload?.rir !== undefined) set.rir = payload.rir;
+    if (payload?.durationSec !== undefined) set.durationSec = payload.durationSec;
+    if (payload?.type) set.type = payload.type;
+    if (payload?.loadMode) set.loadMode = payload.loadMode;
+    if (payload?.assistanceKg !== undefined) set.assistanceKg = payload.assistanceKg;
+    if (payload?.addedWeightKg !== undefined) set.addedWeightKg = payload.addedWeightKg;
 
-    const bw = LiftOS.isBodyweight(ex.exerciseId);
-    if (set.reps == null || set.reps <= 0) {
-      return { ok: false, error: "需要填写真实次数" };
-    }
-    if (set.weight == null || set.weight < 0) {
-      return { ok: false, error: bw ? "自重 weight 应为 0 或附加负重" : "需要填写重量" };
-    }
-    if (!bw && set.weight === 0 && !LiftOS.isBodyweight(ex.exerciseId)) {
-      // loaded exercise with 0kg is unusual but allowed only if bodyweight
+    const isDuration = LiftOS.isDurationExercise?.(ex.exerciseId) || set.durationSec != null;
+    if (isDuration) {
+      if (set.durationSec == null || set.durationSec <= 0) {
+        return { ok: false, error: "需要填写真实时长（秒）" };
+      }
+      set.reps = set.reps ?? null;
+      if (set.weight == null) set.weight = 0;
+    } else {
+      if (set.reps == null || set.reps <= 0) {
+        return { ok: false, error: "需要填写真实次数" };
+      }
+      if (set.weight == null || set.weight < 0) {
+        return { ok: false, error: "需要填写重量" };
+      }
+      if (set.loadMode === "assisted") {
+        if (set.assistanceKg == null) set.assistanceKg = set.weight ?? 0;
+      }
     }
 
     set.completed = true;
     set.completedAt = Date.now();
 
     const newPrs = [];
-    if (S().isWork(set)) {
-      // Baseline = stored history + this session's earlier completed work sets for same exercise
+    if (S().isWork(set) && !isDuration) {
       const liveRows = S().sessionBaseline(session, ex.exerciseId, set.id);
       const prior = S().detectSetPRs(ex.exerciseId, set, liveRows);
-      prior.forEach((p) => {
-        newPrs.push({
-          ...p,
-          exerciseId: ex.exerciseId,
-          exerciseName: ex.name,
-          setId: set.id,
-          weight: set.weight,
-          reps: set.reps,
+      // assisted: prefer less assistance at equal/better reps
+      if (set.loadMode === "assisted") {
+        const priorBestAssist = (S().exerciseHistory(ex.exerciseId, liveRows) || []).flatMap((r) =>
+          r.sets.filter((x) => x.loadMode === "assisted" && x.reps)
+        );
+        const minAssist = priorBestAssist.length
+          ? Math.min(...priorBestAssist.map((x) => Number(x.assistanceKg ?? x.weight) || 0))
+          : null;
+        if (minAssist != null && Number(set.assistanceKg) < minAssist && set.reps >= (priorBestAssist[0]?.reps || 0)) {
+          newPrs.push({
+            type: "assisted",
+            label: "New Assist PR",
+            detail: `辅助 ${set.assistanceKg}kg × ${set.reps}`,
+          });
+        } else if (minAssist == null) {
+          newPrs.push({
+            type: "assisted",
+            label: "Assist Baseline",
+            detail: `辅助 ${set.assistanceKg}kg × ${set.reps}`,
+          });
+        }
+      } else {
+        prior.forEach((p) => {
+          newPrs.push({
+            ...p,
+            exerciseId: ex.exerciseId,
+            exerciseName: ex.name,
+            setId: set.id,
+            weight: set.weight,
+            reps: set.reps,
+          });
         });
-      });
+      }
       session.prs = session.prs || [];
       newPrs.forEach((p) => session.prs.push(p));
     }
 
-    // rest auto-start
-    const restSec = ex.planExercise?.restSeconds || St().getPrefs().restDefault || 90;
-    session.rest = {
-      duration: restSec,
-      endsAt: Date.now() + restSec * 1000,
-      startedAt: Date.now(),
-    };
+    // rest: skip on final work set of exercise
+    let restSec = 0;
+    if (!isLastWorkSetOfExercise(ex, setIdx)) {
+      restSec = ex.planExercise?.restSeconds || St().getPrefs().restDefault || 90;
+      if (set.type === "warmup") restSec = Math.min(restSec, 60);
+      session.rest = {
+        duration: restSec,
+        endsAt: Date.now() + restSec * 1000,
+        startedAt: Date.now(),
+      };
+    } else {
+      session.rest = null;
+    }
 
     save(session);
-    return { ok: true, prs: newPrs, restSeconds: restSec, set };
+    return { ok: true, prs: newPrs, restSeconds: restSec, set, skippedRest: restSec === 0 };
   }
 
   function undoSet(session, setIdx) {
@@ -331,6 +385,142 @@ LiftOS.Workout = (() => {
     return Math.max(0, Math.ceil((session.rest.endsAt - Date.now()) / 1000));
   }
 
+  /** Free / ad-hoc workout — empty session, no fake plan. */
+  function createFreeSession() {
+    return {
+      id: uid("ws"),
+      planId: null,
+      planName: "自由训练",
+      source: "free",
+      startTime: Date.now(),
+      endTime: null,
+      exIndex: 0,
+      exercises: [],
+      prs: [],
+      rest: null,
+      feeling: null,
+      note: "",
+      version: 3,
+    };
+  }
+
+  function renumberSets(ex) {
+    let n = 0;
+    ex.sets.forEach((s) => {
+      if (s.type === "warmup") s.num = 0;
+      else {
+        n += 1;
+        s.num = n;
+      }
+    });
+  }
+
+  function addSet(session, setIdx, type = "work") {
+    const ex = currentEx(session);
+    if (!ex) return false;
+    const lm = LiftOS.Gym?.defaultLoadMode(ex.exerciseId) || "external";
+    const s = makeSet(type, 0, ex.sets.find((x) => x.weight != null)?.weight ?? null);
+    s.loadMode = lm;
+    const at = setIdx == null ? ex.sets.length : Math.max(0, Math.min(ex.sets.length, setIdx));
+    ex.sets.splice(at, 0, s);
+    renumberSets(ex);
+    save(session);
+    return true;
+  }
+
+  function deleteSet(session, setIdx) {
+    const ex = currentEx(session);
+    if (!ex || !ex.sets[setIdx]) return { ok: false, error: "no set" };
+    const set = ex.sets[setIdx];
+    if (set.completed) return { ok: false, error: "completed_set_requires_confirm" };
+    ex.sets.splice(setIdx, 1);
+    renumberSets(ex);
+    save(session);
+    return { ok: true };
+  }
+
+  function deleteCompletedSet(session, setIdx) {
+    const ex = currentEx(session);
+    if (!ex || !ex.sets[setIdx]) return { ok: false, error: "no set" };
+    const set = ex.sets[setIdx];
+    if (!set.completed) return { ok: false, error: "not completed" };
+    // recalc: remove PRs linked to set
+    session.prs = (session.prs || []).filter((p) => p.setId !== set.id);
+    ex.sets.splice(setIdx, 1);
+    renumberSets(ex);
+    save(session);
+    return { ok: true };
+  }
+
+  /** Copy immediately previous completed set in this exercise into current set. */
+  function copyPreviousCompletedSet(session, setIdx) {
+    const ex = currentEx(session);
+    if (!ex || !ex.sets[setIdx]) return { ok: false, error: "no set" };
+    const prev = ex.sets.slice(0, setIdx).reverse().find((s) => s.completed);
+    if (!prev) return { ok: false, error: "no previous completed set" };
+    const cur = ex.sets[setIdx];
+    cur.weight = prev.weight;
+    cur.reps = prev.reps;
+    cur.rir = prev.rir;
+    cur.durationSec = prev.durationSec;
+    cur.loadMode = prev.loadMode;
+    cur.assistanceKg = prev.assistanceKg;
+    cur.addedWeightKg = prev.addedWeightKg;
+    cur.type = prev.type === "warmup" ? "work" : prev.type;
+    save(session);
+    return { ok: true, copied: cur };
+  }
+
+  /** Copy matching prior-workout set (same exercise work index). */
+  function copyPriorWorkoutSet(session, setIdx, preference = "same_routine") {
+    const ex = currentEx(session);
+    if (!ex || !ex.sets[setIdx]) return { ok: false, error: "no set" };
+    const workIdx = ex.sets.slice(0, setIdx).filter((s) => S().isWork(s)).length;
+    const prev = LiftOS.Gym.previousSetForIndex(ex.exerciseId, workIdx, preference, session);
+    if (!prev) return { ok: false, error: "上次无对应组" };
+    const cur = ex.sets[setIdx];
+    cur.weight = prev.weight ?? cur.weight;
+    cur.reps = prev.reps ?? null;
+    cur.rir = prev.rir ?? null;
+    cur.durationSec = prev.durationSec ?? null;
+    cur.loadMode = prev.loadMode || cur.loadMode;
+    cur.assistanceKg = prev.assistanceKg ?? null;
+    cur.addedWeightKg = prev.addedWeightKg ?? null;
+    save(session);
+    return { ok: true, copied: prev };
+  }
+
+  function setSetType(session, setIdx, type) {
+    const ex = currentEx(session);
+    if (!ex || !ex.sets[setIdx]) return false;
+    ex.sets[setIdx].type = type;
+    renumberSets(ex);
+    save(session);
+    return true;
+  }
+
+  function updateHistoryEntry(entry) {
+    const hist = St().getHistory();
+    const i = hist.findIndex((h) => h.id === entry.id);
+    if (i < 0) return false;
+    // recompute volume/workSets from sets
+    let volume = 0;
+    let workSets = 0;
+    (entry.exercises || []).forEach((ex) => {
+      (ex.sets || []).forEach((s) => {
+        if (S().isWork(s)) {
+          workSets += 1;
+          volume += (Number(s.weight) || 0) * (Number(s.reps) || 0);
+        }
+      });
+    });
+    entry.volume = Math.round(volume);
+    entry.workSets = workSets;
+    hist[i] = entry;
+    St().saveHistory(hist);
+    return true;
+  }
+
   /** Finish: archive to history, clear active session. */
   function finish(session, extras = {}) {
     const volume = S().sessionVolume(session);
@@ -342,6 +532,7 @@ LiftOS.Workout = (() => {
       date: LiftOS.localDateKey(new Date(session.startTime)),
       planId: session.planId,
       planName: session.planName,
+      source: session.source || (session.planId ? "plan" : "free"),
       startTime: session.startTime,
       endTime: Date.now(),
       durationMinutes: Math.max(1, Math.round(elapsedMs / 60000)),
@@ -362,6 +553,10 @@ LiftOS.Workout = (() => {
               weight: s.weight,
               reps: s.reps,
               rir: s.rir,
+              durationSec: s.durationSec ?? null,
+              loadMode: s.loadMode || "external",
+              assistanceKg: s.assistanceKg ?? null,
+              addedWeightKg: s.addedWeightKg ?? null,
               completedAt: s.completedAt,
             })),
         }))
@@ -391,6 +586,7 @@ LiftOS.Workout = (() => {
 
   return {
     createFromPlan,
+    createFreeSession,
     save,
     currentEx,
     activeSetIndex,
@@ -415,5 +611,13 @@ LiftOS.Workout = (() => {
     suggestedWeightFor,
     makeSet,
     uid,
+    addSet,
+    deleteSet,
+    deleteCompletedSet,
+    copyPreviousCompletedSet,
+    copyPriorWorkoutSet,
+    setSetType,
+    updateHistoryEntry,
+    renumberSets,
   };
 })();

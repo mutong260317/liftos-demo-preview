@@ -2,8 +2,8 @@
 
 window.LiftOS = window.LiftOS || {};
 
-LiftOS.APP_VERSION = "0.2.1";
-LiftOS.CURRENT_SCHEMA_VERSION = 4;
+LiftOS.APP_VERSION = "0.3.0";
+LiftOS.CURRENT_SCHEMA_VERSION = 5;
 
 LiftOS.Migrations = (() => {
   const KEY_VERSION = "liftos.schemaVersion";
@@ -60,12 +60,52 @@ LiftOS.Migrations = (() => {
     }
   }
 
+  /** v4 → v5: ensure set fields exist (type/loadMode/duration) without wiping. */
+  function migrateToV5() {
+    const session = readJson("liftos.session", null);
+    if (session && Array.isArray(session.exercises)) {
+      session.exercises.forEach((ex) => {
+        (ex.sets || []).forEach((s) => {
+          if (!s.type) s.type = "work";
+          if (!s.loadMode) {
+            s.loadMode = LiftOS.Gym ? LiftOS.Gym.defaultLoadMode(ex.exerciseId) : s.weight > 0 ? "external" : "bodyweight";
+          }
+          if (s.durationSec == null) s.durationSec = null;
+          if (s.assistanceKg == null) s.assistanceKg = null;
+          if (s.addedWeightKg == null) s.addedWeightKg = null;
+        });
+      });
+      session.schema = 5;
+      writeJson("liftos.session", session);
+    }
+    const history = readJson("liftos.history", null);
+    if (Array.isArray(history)) {
+      history.forEach((h) => {
+        (h.exercises || []).forEach((ex) => {
+          (ex.sets || []).forEach((s) => {
+            if (!s.type) s.type = "work";
+            if (s.durationSec == null) s.durationSec = null;
+            if (s.assistanceKg == null) s.assistanceKg = null;
+            if (s.addedWeightKg == null) s.addedWeightKg = null;
+          });
+        });
+      });
+      writeJson("liftos.history", history);
+    }
+    const prefs = readJson("liftos.prefs", null);
+    if (prefs && typeof prefs === "object") {
+      if (prefs.previousValueMode == null) prefs.previousValueMode = "same_routine";
+      if (prefs.keepAwake == null) prefs.keepAwake = true;
+      writeJson("liftos.prefs", prefs);
+    }
+  }
+
   const STEPS = [
-    // placeholder chains: each version runs once
     { to: 1, run: () => {} },
     { to: 2, run: () => {} },
     { to: 3, run: () => {} },
     { to: 4, run: migrateToV4 },
+    { to: 5, run: migrateToV5 },
   ];
 
   /**

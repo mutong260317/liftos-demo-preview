@@ -17,17 +17,24 @@ LiftOS.Stats = (() => {
   }
 
   function isWork(set) {
-    return !set.type || set.type === "work" || set.type === "failure" || set.type === "drop";
+    const t = set?.type;
+    if (!t) return true;
+    return t === "work" || t === "failure" || t === "drop" || t === "amrap";
   }
 
   function isWarmup(set) {
-    return set.type === "warmup";
+    return set?.type === "warmup";
   }
 
   function setVolume(set) {
     if (!isWork(set)) return 0;
-    const w = Number(set.weight) || 0;
+    const w = Number(set.weight) || Number(set.addedWeightKg) || 0;
     const r = Number(set.reps) || 0;
+    // assisted: count assistance mass as load proxy only if no external weight
+    if (set.loadMode === "assisted") {
+      const assist = Number(set.assistanceKg) || 0;
+      return Math.max(0, assist) * r;
+    }
     return w * r;
   }
 

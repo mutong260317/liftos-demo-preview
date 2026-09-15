@@ -1,5 +1,5 @@
 /* LiftOS Service Worker — versioned cache, skip-waiting updates */
-const CACHE = "liftos-v0.2.1";
+const CACHE = "liftos-v0.3.0";
 const ASSETS = [
   "./",
   "./index.html",
@@ -15,6 +15,7 @@ const ASSETS = [
   "./js/progression.js",
   "./js/plans.js",
   "./js/workout.js",
+  "./js/gym.js",
   "./js/app.js",
   "./manifest.json",
   "./version.json",
