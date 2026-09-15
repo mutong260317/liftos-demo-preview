@@ -15,6 +15,7 @@ LiftOS.Workout = (() => {
   }
 
   function suggestedWeightFor(exerciseId, planEx) {
+    const bw = LiftOS.isBodyweight(exerciseId);
     const rows = S().exerciseHistory(exerciseId);
     const sug = LiftOS.Progression.getProgressionSuggestion({
       exerciseId,
@@ -22,7 +23,8 @@ LiftOS.Workout = (() => {
       repMax: planEx.repMax,
       historyRows: rows,
     });
-    return { weight: sug.suggestedWeight, advice: sug };
+    const weight = bw ? Number(sug.suggestedWeight) || 0 : sug.suggestedWeight;
+    return { weight, advice: sug };
   }
 
   function makeSet(type, num, weight) {
@@ -48,14 +50,15 @@ LiftOS.Workout = (() => {
       .map((pe) => {
         const master = LiftOS.getExercise(pe.exerciseId);
         const { weight, advice } = suggestedWeightFor(pe.exerciseId, pe);
+        const bw = LiftOS.isBodyweight(pe.exerciseId);
         const sets = [];
-        // optional single warm-up for compounds with weight history / barbell-ish
-        if (master && master.category === "compound" && pe.workSets >= 3) {
+        // warm-up only for loaded compounds
+        if (master && !bw && master.category === "compound" && pe.workSets >= 3 && weight > 0) {
           const warm = Math.max(0, Math.round((weight * 0.5) / 2.5) * 2.5);
           sets.push(makeSet("warmup", 0, warm));
         }
         for (let i = 0; i < pe.workSets; i++) {
-          sets.push(makeSet("work", i + 1, weight));
+          sets.push(makeSet("work", i + 1, bw ? 0 : weight));
         }
         return {
           id: uid("ex"),
@@ -133,11 +136,15 @@ LiftOS.Workout = (() => {
     if (payload?.reps != null) set.reps = payload.reps;
     if (payload?.rir !== undefined) set.rir = payload.rir; // null allowed = 未记录
 
+    const bw = LiftOS.isBodyweight(ex.exerciseId);
     if (set.reps == null || set.reps <= 0) {
       return { ok: false, error: "需要填写真实次数" };
     }
     if (set.weight == null || set.weight < 0) {
-      return { ok: false, error: "需要填写重量" };
+      return { ok: false, error: bw ? "自重 weight 应为 0 或附加负重" : "需要填写重量" };
+    }
+    if (!bw && set.weight === 0 && !LiftOS.isBodyweight(ex.exerciseId)) {
+      // loaded exercise with 0kg is unusual but allowed only if bodyweight
     }
 
     set.completed = true;
@@ -145,11 +152,21 @@ LiftOS.Workout = (() => {
 
     const newPrs = [];
     if (S().isWork(set)) {
-      // PR check against history only (not this live session's prior sets, so one set can chain PRs in-session but history is ground truth)
-      const prior = S().detectSetPRs(ex.exerciseId, set, []);
+      // Baseline = stored history + this session's earlier completed work sets for same exercise
+      const liveRows = S().sessionBaseline(session, ex.exerciseId, set.id);
+      const prior = S().detectSetPRs(ex.exerciseId, set, liveRows);
       prior.forEach((p) => {
-        newPrs.push({ ...p, exerciseId: ex.exerciseId, exerciseName: ex.name, setId: set.id, weight: set.weight, reps: set.reps });
+        newPrs.push({
+          ...p,
+          exerciseId: ex.exerciseId,
+          exerciseName: ex.name,
+          setId: set.id,
+          weight: set.weight,
+          reps: set.reps,
+        });
       });
+      session.prs = session.prs || [];
+      newPrs.forEach((p) => session.prs.push(p));
     }
 
     // rest auto-start
@@ -196,30 +213,30 @@ LiftOS.Workout = (() => {
     save(session);
   }
 
-  function addExerciseToSession(session, exerciseId, params) {
+  function addExerciseToSession(session, exerciseId, params = {}) {
     const master = LiftOS.getExercise(exerciseId);
     if (!master) return false;
-    const { weight, advice } = suggestedWeightFor(exerciseId, {
-      repMin: params.repMin,
-      repMax: params.repMax,
-    });
+    const pe = {
+      ...(master.defaultParams || {}),
+      workSets: params.workSets ?? master.defaultParams?.workSets ?? 3,
+      repMin: params.repMin ?? master.defaultParams?.repMin ?? 8,
+      repMax: params.repMax ?? master.defaultParams?.repMax ?? 12,
+      targetRirMin: params.targetRirMin ?? master.defaultParams?.targetRirMin ?? 1,
+      targetRirMax: params.targetRirMax ?? master.defaultParams?.targetRirMax ?? 2,
+      restSeconds: params.restSeconds ?? master.defaultParams?.restSeconds ?? 90,
+    };
+    const { weight, advice } = suggestedWeightFor(exerciseId, pe);
+    const bw = LiftOS.isBodyweight(exerciseId);
     const sets = [];
-    for (let i = 0; i < (params.workSets || 3); i++) {
-      sets.push(makeSet("work", i + 1, weight));
+    for (let i = 0; i < pe.workSets; i++) {
+      sets.push(makeSet("work", i + 1, bw ? 0 : weight));
     }
     session.exercises.push({
       id: uid("ex"),
       exerciseId,
       name: master.name,
       muscle: master.muscleLabel,
-      planExercise: {
-        workSets: params.workSets || 3,
-        repMin: params.repMin ?? 8,
-        repMax: params.repMax ?? 12,
-        targetRirMin: params.targetRirMin ?? 1,
-        targetRirMax: params.targetRirMax ?? 2,
-        restSeconds: params.restSeconds ?? 90,
-      },
+      planExercise: pe,
       sets,
       skipped: false,
       advice,
@@ -231,7 +248,7 @@ LiftOS.Workout = (() => {
 
   /**
    * Replace current exercise.
-   * mode: 'default' | 'reuse' — use new defaults or keep old plan params.
+   * mode: 'default' | 'reuse' — use master.defaultParams or keep old plan params.
    * Notes are NEVER copied across different exercise ids.
    */
   function replaceExercise(session, newExerciseId, mode = "default") {
@@ -246,19 +263,13 @@ LiftOS.Workout = (() => {
     const pe =
       mode === "reuse"
         ? { ...oldParams }
-        : {
-            workSets: defaultWorkSets(master),
-            repMin: 8,
-            repMax: 12,
-            targetRirMin: 1,
-            targetRirMax: 2,
-            restSeconds: 90,
-          };
+        : { ...(master.defaultParams || { workSets: 3, repMin: 8, repMax: 12, targetRirMin: 1, targetRirMax: 2, restSeconds: 90 }) };
 
     const { weight, advice } = suggestedWeightFor(newExerciseId, pe);
+    const bw = LiftOS.isBodyweight(newExerciseId);
     const sets = [];
     for (let i = 0; i < pe.workSets; i++) {
-      sets.push(makeSet("work", i + 1, weight));
+      sets.push(makeSet("work", i + 1, bw ? 0 : weight));
     }
 
     const idx = session.exIndex;
@@ -276,11 +287,6 @@ LiftOS.Workout = (() => {
     };
     save(session);
     return true;
-  }
-
-  function defaultWorkSets(master) {
-    if (master.category === "compound") return 4;
-    return 3;
   }
 
   function skipExercise(session) {
@@ -333,7 +339,7 @@ LiftOS.Workout = (() => {
 
     const entry = {
       id: session.id,
-      date: new Date(session.startTime).toISOString().slice(0, 10),
+      date: LiftOS.localDateKey(new Date(session.startTime)),
       planId: session.planId,
       planName: session.planName,
       startTime: session.startTime,

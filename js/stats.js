@@ -171,28 +171,38 @@ LiftOS.Stats = (() => {
    */
   function detectSetPRs(exerciseId, set, extraSessions = []) {
     const results = [];
-    if (!set || !isWork(set) || !set.completed || !set.weight || !set.reps) return results;
+    // bodyweight / zero-load: no weight/e1RM PR; reps PR still possible when weight matches (0)
+    if (!set || !isWork(set) || !set.completed || set.reps == null || set.reps <= 0) return results;
     const master = LiftOS.getExercise(exerciseId);
+    const isBW = master?.equipment === "bodyweight";
+    if (!isBW && (set.weight == null || set.weight <= 0)) return results;
 
     const priorBest = bestSet(exerciseId, extraSessions);
-    // exclude current set if it was already saved into history — caller passes prior-only sessions
     if (!priorBest || set.weight > priorBest.weight) {
-      results.push({
-        type: "weight",
-        label: "New Weight PR",
-        detail: `${set.weight}kg × ${set.reps}`,
-      });
+      if (!isBW && set.weight > 0) {
+        results.push({
+          type: "weight",
+          label: "New Weight PR",
+          detail: `${set.weight}kg × ${set.reps}`,
+        });
+      } else if (isBW && set.weight > 0) {
+        results.push({
+          type: "weight",
+          label: "New Load PR",
+          detail: `+${set.weight}kg × ${set.reps}`,
+        });
+      }
     } else if (set.weight === priorBest.weight && set.reps > priorBest.reps) {
       results.push({
         type: "reps",
         label: "New Rep PR",
-        detail: `${set.weight}kg × ${set.reps}`,
+        detail: isBW && !set.weight ? `${set.reps} 次` : `${set.weight}kg × ${set.reps}`,
       });
     }
 
-    if (!master || master.supportsE1RM !== false) {
+    if (!isBW && master?.supportsE1RM !== false) {
       const conf = e1RMConfidence(set.reps);
-      if (conf >= 0.5) {
+      if (conf >= 0.5 && set.weight > 0) {
         const val = e1RM(set.weight, set.reps);
         const priorE = bestE1RM(exerciseId, extraSessions);
         if (!priorE || val > priorE.e1rm + 0.05) {
@@ -307,8 +317,11 @@ LiftOS.Stats = (() => {
     return map;
   }
 
-  function e1rmSeries(exerciseId, extraSessions = []) {
-    const rows = exerciseHistory(exerciseId, extraSessions).slice().reverse();
+  function e1rmSeries(exerciseId, extraSessions = [], range = "all") {
+    const rows = exerciseHistory(exerciseId, extraSessions)
+      .filter((r) => inRange(r.date, range))
+      .slice()
+      .reverse();
     const master = LiftOS.getExercise(exerciseId);
     if (master && master.supportsE1RM === false) {
       return rows.map((r) => {
@@ -324,6 +337,36 @@ LiftOS.Stats = (() => {
       });
       return { date: r.date, value: best };
     });
+  }
+
+  /**
+   * Convert live session completed work sets (before setId) into session-shaped
+   * extras so exerciseHistory/bestSet can merge them with stored history.
+   */
+  function sessionBaseline(session, exerciseId, beforeSetId) {
+    if (!session) return [];
+    const sets = [];
+    (session.exercises || []).forEach((ex) => {
+      if (ex.exerciseId !== exerciseId || ex.skipped) return;
+      for (const s of ex.sets) {
+        if (!isWork(s) || !s.completed) continue;
+        if (beforeSetId && s.id === beforeSetId) break;
+        sets.push({ type: s.type, weight: s.weight, reps: s.reps, rir: s.rir, completed: true });
+      }
+    });
+    if (!sets.length) return [];
+    return [
+      {
+        id: `live_${session.id}`,
+        startTime: session.startTime,
+        planName: session.planName,
+        exercises: [{ exerciseId, name: "", sets }],
+      },
+    ];
+  }
+
+  function localDateKey(d = new Date()) {
+    return LiftOS.localDateKey(d);
   }
 
   return {
@@ -348,5 +391,7 @@ LiftOS.Stats = (() => {
     summarizeHistory,
     weeklyMuscleSets,
     e1rmSeries,
+    sessionBaseline,
+    localDateKey,
   };
 })();

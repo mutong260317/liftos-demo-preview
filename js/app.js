@@ -214,8 +214,8 @@ LiftOS.UI = (() => {
     let html = "";
     for (let i = 0; i < 7; i++) {
       const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
-      const iso = d.toISOString().slice(0, 10);
-      const done = hist.some((h) => h.date === iso);
+      const key = LiftOS.localDateKey(d);
+      const done = hist.some((h) => h.date === key);
       const isToday = d.toDateString() === now.toDateString();
       if (done) doneCount += 1;
       html += `<div class="day-col ${done ? "done" : ""} ${isToday ? "today" : ""}">
@@ -234,10 +234,10 @@ LiftOS.UI = (() => {
     const day = now.getDay();
     const mondayOffset = day === 0 ? 6 : day - 1;
     const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset);
-    const startIso = monday.toISOString().slice(0, 10);
+    const startIso = LiftOS.localDateKey(monday);
     const hist = S.getHistory().filter((h) => h.date >= startIso);
     const prevMonday = new Date(monday.getTime() - 7 * 86400000);
-    const prevStart = prevMonday.toISOString().slice(0, 10);
+    const prevStart = LiftOS.localDateKey(prevMonday);
     const prevEnd = startIso;
     const prev = S.getHistory().filter((h) => h.date >= prevStart && h.date < prevEnd);
 
@@ -337,9 +337,10 @@ LiftOS.UI = (() => {
             const m = LiftOS.getExercise(pe.exerciseId);
             return `<div class="plan-day-item">
               <div class="idx">${i + 1}</div>
-              <div class="info">
+              <div class="info" style="cursor:pointer" onclick="App.openPlanExEditor('${planId}',${i})">
                 <div class="name">${esc(m?.name || pe.exerciseId)}</div>
                 <div class="sets">${pe.workSets} × ${pe.repMin}-${pe.repMax} · 休息 ${pe.restSeconds}s · RIR ${pe.targetRirMin}-${pe.targetRirMax}</div>
+                <div class="sets" style="color:var(--accent);font-weight:600">编辑参数</div>
               </div>
               <button class="icon-btn" aria-label="删除动作" onclick="event.stopPropagation();App.removePlanEx('${planId}',${i})">
                 <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -374,15 +375,97 @@ LiftOS.UI = (() => {
         const m = LiftOS.getExercise(e.exerciseId);
         return `<div class="plan-day-item">
           <div class="idx">${i + 1}</div>
-          <div class="info">
+          <div class="info" style="cursor:pointer" onclick="App.openDraftExEditor(${i})">
             <div class="name">${esc(m?.name || e.exerciseId)}</div>
-            <div class="sets">${e.workSets} × ${e.repMin}-${e.repMax} · 休息 ${e.restSeconds}s</div>
+            <div class="sets">${e.workSets} × ${e.repMin}-${e.repMax} · 休息 ${e.restSeconds}s · RIR ${e.targetRirMin}-${e.targetRirMax}</div>
+            <div class="sets" style="color:var(--accent);font-weight:600">编辑参数</div>
           </div>
           <button class="icon-btn" aria-label="移除" onclick="App.draftRemoveEx(${i})">×</button>
         </div>`;
       })
       .join("");
     $("#createPlanExList").innerHTML = list || `<p class="text-secondary" style="font-size:13px;padding:8px 0">尚未添加动作</p>`;
+  }
+
+  function openDraftExEditor(i) {
+    const e = state.draftPlan?.exercises[i];
+    if (!e) return;
+    const m = LiftOS.getExercise(e.exerciseId);
+    openOverlay(`
+      <div class="modal" onclick="event.stopPropagation()" style="max-width:340px">
+        <h3>${esc(m?.name || "")} 参数</h3>
+        <div class="form-group" style="text-align:left">
+          <label>工作组</label>
+          <input class="form-input" id="peSets" type="number" min="1" max="10" value="${e.workSets}" />
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;text-align:left">
+          <div class="form-group"><label>次数下限</label><input class="form-input" id="peMin" type="number" value="${e.repMin}" /></div>
+          <div class="form-group"><label>次数上限</label><input class="form-input" id="peMax" type="number" value="${e.repMax}" /></div>
+          <div class="form-group"><label>RIR 下限</label><input class="form-input" id="peRirMin" type="number" min="0" max="4" value="${e.targetRirMin}" /></div>
+          <div class="form-group"><label>RIR 上限</label><input class="form-input" id="peRirMax" type="number" min="0" max="4" value="${e.targetRirMax}" /></div>
+          <div class="form-group" style="grid-column:1/-1"><label>休息（秒）</label><input class="form-input" id="peRest" type="number" min="15" step="15" value="${e.restSeconds}" /></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" onclick="App.saveDraftExEditor(${i})">保存参数</button>
+          <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
+        </div>
+      </div>`);
+  }
+
+  function saveDraftExEditor(i) {
+    const e = state.draftPlan.exercises[i];
+    e.workSets = Math.max(1, parseInt($("#peSets").value, 10) || e.workSets);
+    e.repMin = Math.max(1, parseInt($("#peMin").value, 10) || e.repMin);
+    e.repMax = Math.max(e.repMin, parseInt($("#peMax").value, 10) || e.repMax);
+    e.targetRirMin = Math.max(0, Math.min(4, parseInt($("#peRirMin").value, 10) || 0));
+    e.targetRirMax = Math.max(e.targetRirMin, Math.min(4, parseInt($("#peRirMax").value, 10) || 0));
+    e.restSeconds = Math.max(15, parseInt($("#peRest").value, 10) || e.restSeconds);
+    closeOverlay();
+    renderCreatePlan();
+    showToast("动作参数已更新");
+  }
+
+  function openPlanExEditor(planId, index) {
+    const plan = P.get(planId);
+    const e = plan?.exercises?.[index];
+    if (!e) return;
+    const m = LiftOS.getExercise(e.exerciseId);
+    openOverlay(`
+      <div class="modal" onclick="event.stopPropagation()" style="max-width:340px">
+        <h3>${esc(m?.name || "")} 参数</h3>
+        <div class="form-group" style="text-align:left">
+          <label>工作组</label>
+          <input class="form-input" id="peSets" type="number" min="1" max="10" value="${e.workSets}" />
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;text-align:left">
+          <div class="form-group"><label>次数下限</label><input class="form-input" id="peMin" type="number" value="${e.repMin}" /></div>
+          <div class="form-group"><label>次数上限</label><input class="form-input" id="peMax" type="number" value="${e.repMax}" /></div>
+          <div class="form-group"><label>RIR 下限</label><input class="form-input" id="peRirMin" type="number" min="0" max="4" value="${e.targetRirMin}" /></div>
+          <div class="form-group"><label>RIR 上限</label><input class="form-input" id="peRirMax" type="number" min="0" max="4" value="${e.targetRirMax}" /></div>
+          <div class="form-group" style="grid-column:1/-1"><label>休息（秒）</label><input class="form-input" id="peRest" type="number" min="15" step="15" value="${e.restSeconds}" /></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" onclick="App.savePlanExEditor('${planId}', ${index})">保存参数</button>
+          <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
+        </div>
+      </div>`);
+  }
+
+  function savePlanExEditor(planId, index) {
+    const plan = P.get(planId);
+    if (!plan) return;
+    const list = plan.exercises.map((e) => ({ ...e }));
+    const e = list[index];
+    e.workSets = Math.max(1, parseInt($("#peSets").value, 10) || e.workSets);
+    e.repMin = Math.max(1, parseInt($("#peMin").value, 10) || e.repMin);
+    e.repMax = Math.max(e.repMin, parseInt($("#peMax").value, 10) || e.repMax);
+    e.targetRirMin = Math.max(0, Math.min(4, parseInt($("#peRirMin").value, 10) || 0));
+    e.targetRirMax = Math.max(e.targetRirMin, Math.min(4, parseInt($("#peRirMax").value, 10) || 0));
+    e.restSeconds = Math.max(15, parseInt($("#peRest").value, 10) || e.restSeconds);
+    P.update(planId, { exercises: list });
+    closeOverlay();
+    openPlanDetail(planId);
+    showToast("计划动作参数已保存");
   }
 
   function saveDraftPlan() {
@@ -581,22 +664,38 @@ LiftOS.UI = (() => {
 
         if (isActive) {
           const sugReps = pickSuggestReps(ex, set, lastSets, i);
-          return `
-          <div class="set-card active" data-set="${i}">
-            <div class="set-editor">
-              <div class="set-label">${isWarm ? "热身组" : `第 ${set.num} 组`}</div>
-              <div class="last-best">上次最佳 ${esc(best ? `${best.weight}kg × ${best.reps}` : "无")} · 目标 ${ex.planExercise.repMin}-${ex.planExercise.repMax} 次</div>
-
+          const bw = LiftOS.isBodyweight(ex.exerciseId);
+          const inc = incOf(ex) || 2.5;
+          const weightBlock = bw
+            ? `
+              <div class="stepper-block">
+                <div class="label">负荷 <span class="suggest-hint">自重默认 0kg，可加附加负重</span></div>
+                <div class="stepper">
+                  <button class="stepper-btn fast" aria-label="减少附加负重" onclick="App.stepWeight(${i}, -${inc})">−${inc}</button>
+                  <div class="stepper-value" role="button" aria-label="编辑附加负重" onclick="App.openWeightInput(${i})">
+                    <span id="wDisplay">${set.weight == null ? 0 : set.weight}</span><span class="unit">${set.weight > 0 ? "kg" : "自重"}</span>
+                  </div>
+                  <button class="stepper-btn fast" aria-label="增加附加负重" onclick="App.stepWeight(${i}, ${inc})">+${inc}</button>
+                </div>
+              </div>`
+            : `
               <div class="stepper-block">
                 <div class="label">重量</div>
                 <div class="stepper">
-                  <button class="stepper-btn fast" aria-label="减少2.5公斤" onclick="App.stepWeight(${i}, -${incOf(ex)})">−${incOf(ex)}</button>
+                  <button class="stepper-btn fast" aria-label="减少重量" onclick="App.stepWeight(${i}, -${incOf(ex)})">−${incOf(ex)}</button>
                   <div class="stepper-value" role="button" aria-label="编辑重量" onclick="App.openWeightInput(${i})">
                     <span id="wDisplay">${set.weight == null ? "—" : set.weight}</span><span class="unit">kg</span>
                   </div>
-                  <button class="stepper-btn fast" aria-label="增加2.5公斤" onclick="App.stepWeight(${i}, ${incOf(ex)})">+${incOf(ex)}</button>
+                  <button class="stepper-btn fast" aria-label="增加重量" onclick="App.stepWeight(${i}, ${incOf(ex)})">+${incOf(ex)}</button>
                 </div>
-              </div>
+              </div>`;
+          return `
+          <div class="set-card active" data-set="${i}">
+            <div class="set-editor">
+              <div class="set-label">${isWarm ? "热身组" : `第 ${set.num} 组`}${bw ? " · 自重" : ""}</div>
+              <div class="last-best">上次最佳 ${esc(best ? (best.weight > 0 ? `${best.weight}kg × ${best.reps}` : `${best.reps} 次`) : "无")} · 目标 ${ex.planExercise.repMin}-${ex.planExercise.repMax} 次</div>
+
+              ${weightBlock}
 
               <div class="stepper-block">
                 <div class="label">次数 ${sugReps != null ? `<span class="suggest-hint">建议 ${sugReps}（未确认）</span>` : ""}</div>
@@ -648,7 +747,7 @@ LiftOS.UI = (() => {
               <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
             </button>
           </div>
-          ${isDone ? `<div class="set-done-meta">${set.weight}kg × ${set.reps}${set.rir != null ? ` · RIR ${set.rir}` : " · RIR 未记录"}</div>` : ""}
+          ${isDone ? `<div class="set-done-meta">${set.weight > 0 ? set.weight + "kg" : "自重"} × ${set.reps}${set.rir != null ? ` · RIR ${set.rir}` : " · RIR 未记录"}</div>` : ""}
         </div>`;
       })
       .join("");
@@ -670,11 +769,16 @@ LiftOS.UI = (() => {
   function stepWeight(i, delta) {
     const ex = W.currentEx(state.session);
     const set = ex.sets[i];
-    const base = set.weight == null ? ex.sets.find((s) => s.weight != null)?.weight ?? 20 : set.weight;
+    const bw = LiftOS.isBodyweight(ex.exerciseId);
+    const base = set.weight == null ? (bw ? 0 : ex.sets.find((s) => s.weight != null)?.weight ?? 20) : set.weight;
     set.weight = Math.max(0, Math.round((base + delta) * 10) / 10);
     W.save(state.session);
     const el = $("#wDisplay");
-    if (el) el.textContent = set.weight;
+    if (el) {
+      el.textContent = set.weight;
+      const unit = el.parentElement?.querySelector(".unit");
+      if (unit && bw) unit.textContent = set.weight > 0 ? "kg" : "自重";
+    }
     if (navigator.vibrate) navigator.vibrate(8);
   }
 
@@ -818,6 +922,7 @@ LiftOS.UI = (() => {
     const ex = W.currentEx(state.session);
     const master = LiftOS.getExercise(newId);
     const old = ex.planExercise;
+    const nd = master.defaultParams || { workSets: 3, repMin: 8, repMax: 12, restSeconds: 90, targetRirMin: 1, targetRirMax: 2 };
     state.pendingReplace = { newId, mode: null };
     openOverlay(`
       <div class="modal" onclick="event.stopPropagation()" style="max-width:340px;text-align:left">
@@ -826,9 +931,10 @@ LiftOS.UI = (() => {
         <div class="card mb-3" style="background:var(--bg-input)">
           <div class="text-secondary" style="font-size:12px;margin-bottom:8px">训练参数</div>
           <div style="font-size:14px;line-height:1.7">
-            工作组 <strong>${old.workSets}</strong> → 新默认 <strong>${LiftOS.Exercises.find(e=>e.id===newId).category==="compound"?4:3}</strong><br/>
-            次数 <strong>${old.repMin}-${old.repMax}</strong><br/>
-            休息 <strong>${old.restSeconds}s</strong>
+            工作组 <strong>${old.workSets}</strong> → 该动作默认 <strong>${nd.workSets}</strong><br/>
+            次数 <strong>${old.repMin}-${old.repMax}</strong> → <strong>${nd.repMin}-${nd.repMax}</strong><br/>
+            休息 <strong>${old.restSeconds}s</strong> → <strong>${nd.restSeconds}s</strong><br/>
+            RIR <strong>${old.targetRirMin}-${old.targetRirMax}</strong> → <strong>${nd.targetRirMin}-${nd.targetRirMax}</strong>
           </div>
           <p class="mt-2" style="font-size:12px;color:var(--text-tertiary)">个人备注不会带入新动作。</p>
         </div>
@@ -1059,10 +1165,11 @@ LiftOS.UI = (() => {
 
   function confirmAddToWorkout(exerciseId) {
     const master = LiftOS.getExercise(exerciseId);
+    const d = master.defaultParams || { workSets: 3, repMin: 8, repMax: 12, restSeconds: 90 };
     openOverlay(`
       <div class="modal" onclick="event.stopPropagation()">
         <h3>添加「${esc(master.name)}」？</h3>
-        <p>工作组：3<br/>目标次数：8–12<br/>休息：90秒</p>
+        <p>工作组：${d.workSets}<br/>目标次数：${d.repMin}–${d.repMax}<br/>休息：${d.restSeconds}秒${master.equipment === "bodyweight" ? "<br/>负荷：自重 (0kg)" : ""}</p>
         <div class="modal-actions">
           <button class="btn btn-primary" onclick="App.doAddToWorkout('${exerciseId}')">确认添加</button>
           <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
@@ -1076,7 +1183,7 @@ LiftOS.UI = (() => {
       closeOverlay();
       return;
     }
-    W.addExerciseToSession(state.session, exerciseId, { workSets: 3, repMin: 8, repMax: 12, restSeconds: 90 });
+    W.addExerciseToSession(state.session, exerciseId, {});
     closeOverlay();
     closeSubpage("subpage-library");
     state.libraryMode = "browse";
@@ -1121,7 +1228,7 @@ LiftOS.UI = (() => {
     const rows = St.exerciseHistory(id);
     const best = St.bestSet(id);
     const bestE = St.bestE1RM(id);
-    const series = St.e1rmSeries(id);
+    const series = St.e1rmSeries(id, [], "all");
     const showE1 = master.supportsE1RM !== false;
 
     const chart =
@@ -1205,7 +1312,7 @@ LiftOS.UI = (() => {
     ];
     $("#strengthRows").innerHTML = lifts
       .map((l) => {
-        const series = St.e1rmSeries(l.id);
+        const series = St.e1rmSeries(l.id, [], range);
         if (series.length < 1) {
           return `<div class="strength-row"><span class="lift-name">${l.label}</span><span class="arrow-path">暂无数据</span></div>`;
         }
@@ -1220,7 +1327,7 @@ LiftOS.UI = (() => {
 
     // e1rm chart for squat or hack
     const chartId = sum.byExercise.hack_squat ? "hack_squat" : "bench";
-    const series = St.e1rmSeries(chartId);
+    const series = St.e1rmSeries(chartId, [], range);
     const name = LiftOS.getExercise(chartId)?.name || "趋势";
     $("#dataChartTitle").textContent = `${name} e1RM`;
     $("#dataChartSub").textContent =
@@ -1493,6 +1600,7 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     closeSubpage,
     renderHome,
     renderPlans,
+    renderCreatePlan,
     renderData,
     renderTraining,
     renderSummary,
@@ -1503,6 +1611,10 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     openCreatePlan,
     saveDraftPlan,
     draftRemoveEx,
+    openDraftExEditor,
+    saveDraftExEditor,
+    openPlanExEditor,
+    savePlanExEditor,
     removePlanEx,
     confirmDeletePlan,
     doDeletePlan,

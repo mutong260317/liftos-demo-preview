@@ -21,7 +21,21 @@ function findBrowser() {
     "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   ];
-  return c.find((p) => fs.existsSync(p)) || undefined;
+  const found = c.find((p) => fs.existsSync(p));
+  if (found) return found;
+  // Playwright chromium cache (CI)
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  const cache = path.join(home, ".cache", "ms-playwright");
+  if (fs.existsSync(cache)) {
+    const dirs = fs.readdirSync(cache).filter((d) => d.startsWith("chromium"));
+    for (const d of dirs) {
+      const bin = path.join(cache, d, "chrome-linux", "chrome");
+      if (fs.existsSync(bin)) return bin;
+      const binWin = path.join(cache, d, "chrome-win", "chrome.exe");
+      if (fs.existsSync(binWin)) return binWin;
+    }
+  }
+  return undefined;
 }
 
 async function launch() {

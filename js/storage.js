@@ -9,7 +9,7 @@ LiftOS.Storage = (() => {
     notes: "liftos.notes",
     history: "liftos.history",
     prefs: "liftos.prefs",
-    seeded: "liftos.seeded.v2",
+    seeded: "liftos.seeded.v3",
   };
 
   function read(key, fallback) {
