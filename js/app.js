@@ -274,7 +274,6 @@ LiftOS.UI = (() => {
   }
 
   function renderHomePrs() {
-    // recent PRs from history sessions that look strong + seed cues
     const items = [];
     const hackBest = St.bestSet("hack_squat");
     if (hackBest) items.push({ name: "哈克深蹲", detail: `${hackBest.weight} kg × ${hackBest.reps}`, badge: "Weight PR" });
@@ -282,6 +281,11 @@ LiftOS.UI = (() => {
     if (benchBest) items.push({ name: "杠铃卧推", detail: `${benchBest.weight} kg × ${benchBest.reps}`, badge: "Weight PR" });
     const inclineBest = St.bestSet("incline");
     if (inclineBest) items.push({ name: "上斜哑铃卧推", detail: `${inclineBest.weight} kg × ${inclineBest.reps}`, badge: "Weight PR" });
+
+    if (!items.length) {
+      $("#homePrs").innerHTML = `<p class="text-secondary" style="font-size:13px;line-height:1.5">完成第一次训练后，这里会显示你的训练趋势与突破。</p>`;
+      return;
+    }
 
     $("#homePrs").innerHTML = items
       .map(
@@ -1291,6 +1295,17 @@ LiftOS.UI = (() => {
   /* ---------- DATA ---------- */
   function renderData() {
     const range = state.dataRange;
+    const allHistory = S.getHistory();
+    const emptyBox = $("#dataEmpty");
+    const dataMain = $("#dataMain");
+    if (!allHistory.length) {
+      if (emptyBox) emptyBox.classList.remove("hide");
+      if (dataMain) dataMain.classList.add("hide");
+      return;
+    }
+    if (emptyBox) emptyBox.classList.add("hide");
+    if (dataMain) dataMain.classList.remove("hide");
+
     const sum = St.summarizeHistory(range);
     $("#dataSessions").textContent = sum.sessions;
     $("#dataHours").textContent = `${Math.floor(sum.minutes / 60)}h`;
@@ -1528,10 +1543,12 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
 
   /* ---------- INIT ---------- */
   function init() {
-    S.seedIfNeeded();
+    S.init();
     const prefs = S.getPrefs();
     setTheme(prefs.theme || "dark");
     state.session = S.getSession();
+    const about = $("#aboutVersion");
+    if (about) about.textContent = `v${LiftOS.APP_VERSION || "0.2.1"}`;
 
     $all(".range-tab").forEach((btn) => {
       btn.addEventListener("click", () => setRange(btn.dataset.range));
@@ -1566,6 +1583,7 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     $("#createPlanName")?.addEventListener("input", () => {
       state.draftPlan.name = $("#createPlanName").value;
     });
+    $("#importFile")?.addEventListener("change", onImportFile);
 
     const tick = () => {
       const now = new Date();
@@ -1574,17 +1592,167 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     tick();
     setInterval(tick, 30000);
 
-    // PWA
+    // PWA + update check
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("sw.js").catch(() => {});
+      navigator.serviceWorker
+        .register("sw.js")
+        .then((reg) => {
+          state.swReg = reg;
+          reg.addEventListener("updatefound", () => {
+            const nw = reg.installing;
+            if (!nw) return;
+            nw.addEventListener("statechange", () => {
+              if (nw.state === "installed" && navigator.serviceWorker.controller) {
+                showUpdateBanner("sw");
+              }
+            });
+          });
+          if (reg.waiting && navigator.serviceWorker.controller) showUpdateBanner("sw");
+        })
+        .catch(() => {});
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (refreshing) return;
+        refreshing = true;
+        // session already saved on every mutation
+        location.reload();
+      });
     }
+    checkRemoteVersion();
 
     renderHome();
     // if session exists, home already shows resume banner
   }
 
+  function cmpVersion(a, b) {
+    const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
+    const pb = String(b).split(".").map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const d = (pa[i] || 0) - (pb[i] || 0);
+      if (d) return d > 0 ? 1 : -1;
+    }
+    return 0;
+  }
+
+  async function checkRemoteVersion() {
+    try {
+      const res = await fetch("version.json", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      const remote = data.version;
+      const local = LiftOS.APP_VERSION || "0.2.1";
+      if (remote && cmpVersion(remote, local) > 0) {
+        state.remoteVersion = remote;
+        showUpdateBanner("version", remote);
+      }
+    } catch (_) {}
+  }
+
+  function showUpdateBanner(kind, remote) {
+    const banner = $("#updateBanner");
+    if (!banner) return;
+    banner.classList.remove("hide");
+    const inWorkout = !!S.getSession();
+    $("#updateTitle").textContent =
+      kind === "sw" ? `LiftOS 新版本已准备好` : `LiftOS 有新版本 V${remote || ""}`;
+    $("#updateHint").textContent = inWorkout
+      ? "正在训练，不会自动刷新。训练结束后再更新。"
+      : "更新不会删除训练数据。";
+    const btn = $("#updateNowBtn");
+    if (btn) {
+      btn.textContent = inWorkout ? "训练结束后更新" : "立即更新";
+      btn.onclick = () => {
+        if (S.getSession()) {
+          showToast("请先结束当前训练再更新");
+          return;
+        }
+        applyUpdate();
+      };
+    }
+    $("#updateLaterBtn")?.addEventListener("click", () => banner.classList.add("hide"), { once: true });
+  }
+
+  function applyUpdate() {
+    // ensure session persisted
+    if (state.session) W.save(state.session);
+    const reg = state.swReg;
+    if (reg && reg.waiting) {
+      reg.waiting.postMessage({ type: "SKIP_WAITING" });
+      // controllerchange will reload
+      setTimeout(() => location.reload(), 800);
+      return;
+    }
+    // no waiting SW — hard reload to pick up network-first version.json
+    location.reload();
+  }
+
+  /* ---------- EXPORT / IMPORT ---------- */
+  function exportData() {
+    const payload = S.downloadExport();
+    showToast(`已导出 ${payload.history.length} 条历史`);
+  }
+
+  function openImportPicker() {
+    const input = $("#importFile");
+    if (input) {
+      input.value = "";
+      input.click();
+    }
+  }
+
+  function onImportFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      let data;
+      try {
+        data = JSON.parse(String(reader.result));
+      } catch {
+        showToast("JSON 无法解析");
+        return;
+      }
+      const v = S.validateImport(data);
+      if (!v.ok) {
+        showToast(v.error || "备份格式无效");
+        return;
+      }
+      openOverlay(`
+        <div class="modal" onclick="event.stopPropagation()">
+          <h3>准备恢复 LiftOS 数据</h3>
+          <p>
+            训练历史：${v.summary.history} 次<br/>
+            训练计划：${v.summary.plans} 个<br/>
+            动作备注：${v.summary.notes} 条<br/><br/>
+            当前本机数据将被替换（会先自动备份）。
+          </p>
+          <div class="modal-actions">
+            <button class="btn btn-primary" id="confirmImport">恢复</button>
+            <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
+          </div>
+        </div>`);
+      $("#confirmImport").onclick = () => {
+        try {
+          S.importPayload(data);
+          state.session = S.getSession();
+          closeOverlay();
+          showToast("备份已恢复");
+          renderHome();
+        } catch (err) {
+          closeOverlay();
+          showToast("恢复失败，原数据未改动");
+        }
+      };
+    };
+    reader.readAsText(file);
+  }
+
   return {
     init,
+    exportData,
+    openImportPicker,
+    applyUpdate,
+    checkRemoteVersion,
     nav,
     navTraining,
     setTheme,

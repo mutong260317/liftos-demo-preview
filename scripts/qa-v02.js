@@ -9,6 +9,7 @@ const path = require("path");
 const OUT = path.join(__dirname, "output", "qa-v02");
 const ROOT = path.dirname(__dirname);
 const INDEX = "file:///" + ROOT.replace(/\\/g, "/") + "/index.html";
+const DEMO_INDEX = INDEX + "?demo=1";
 
 function log(step, ok, detail = "") {
   console.log(`${ok ? "PASS" : "FAIL"}  ${step}${detail ? " — " + detail : ""}`);
@@ -85,9 +86,9 @@ async function run() {
 
   try {
     // fresh profile
-    await page.goto(INDEX, { waitUntil: "domcontentloaded" });
+    await page.goto(DEMO_INDEX, { waitUntil: "domcontentloaded" });
     await page.evaluate(() => localStorage.clear());
-    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.goto(DEMO_INDEX, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(300);
 
     results.push(log("boot app", await page.locator("#todayCard").count() > 0));

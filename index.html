@@ -36,6 +36,17 @@
           <h1 id="greetTitle">今天准备练什么？</h1>
         </div>
         <div class="content">
+          <div class="update-banner hide" id="updateBanner">
+            <div class="info">
+              <div class="label">版本更新</div>
+              <div class="name" id="updateTitle">LiftOS 有新版本</div>
+              <div class="time" id="updateHint">可安全更新，训练数据会保留</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <button class="btn btn-primary btn-sm" id="updateNowBtn">立即更新</button>
+              <button class="btn btn-ghost btn-sm" id="updateLaterBtn">稍后</button>
+            </div>
+          </div>
           <div class="resume-banner hide" id="resumeBanner">
             <div class="info">
               <div class="label">你有一项训练正在进行</div>
@@ -106,6 +117,12 @@
           </div>
         </div>
         <div class="content">
+          <div class="empty-state hide" id="dataEmpty">
+            <div class="icon">📊</div>
+            <h3>暂无训练数据</h3>
+            <p>完成训练后，你将在这里看到：<br/>• 训练次数<br/>• 总容量<br/>• PR<br/>• 力量趋势<br/>• 肌群工作组</p>
+          </div>
+          <div id="dataMain">
           <div class="range-tabs" id="rangeTabs">
             <button class="range-tab active" data-range="7d">7天</button>
             <button class="range-tab" data-range="30d">30天</button>
@@ -142,6 +159,7 @@
             <div class="section-title">动作分析</div>
             <div id="dataExList"></div>
           </div>
+          </div><!-- /dataMain -->
         </div>
       </div>
 
@@ -170,9 +188,17 @@
                 <div class="icon"><svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></div>
                 <span class="label">主题</span><span class="value" id="themeLabel">深色</span><span class="chev">›</span>
               </button>
-              <button class="settings-item" onclick="App.showToast('LiftOS V0.2 Functional Prototype')">
+              <button class="settings-item" id="btnExport" onclick="App.exportData()">
+                <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></div>
+                <span class="label">导出数据</span><span class="value">JSON 备份</span><span class="chev">›</span>
+              </button>
+              <button class="settings-item" id="btnImport" onclick="App.openImportPicker()">
+                <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 21V9M7 14l5-5 5 5"/><path d="M5 3h14"/></svg></div>
+                <span class="label">导入备份</span><span class="value">恢复 JSON</span><span class="chev">›</span>
+              </button>
+              <button class="settings-item" onclick="App.showToast('LiftOS V' + (window.LiftOS?.APP_VERSION || '0.2.1'))">
                 <div class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg></div>
-                <span class="label">关于</span><span class="value">v0.2</span><span class="chev">›</span>
+                <span class="label">关于</span><span class="value" id="aboutVersion">v0.2.1</span><span class="chev">›</span>
               </button>
             </div>
           </div>
@@ -408,9 +434,11 @@
 
       <div class="overlay" id="overlay"></div>
       <div class="toast" id="toast"></div>
+      <input type="file" id="importFile" accept="application/json,.json" class="hide" />
     </div>
   </div>
 
+  <script src="js/migrations.js"></script>
   <script src="js/data.js"></script>
   <script src="js/storage.js"></script>
   <script src="js/stats.js"></script>

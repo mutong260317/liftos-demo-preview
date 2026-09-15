@@ -1,5 +1,5 @@
-/* LiftOS Service Worker — cache-first for static shell */
-const CACHE = "liftos-v0.2";
+/* LiftOS Service Worker — versioned cache, skip-waiting updates */
+const CACHE = "liftos-v0.2.1";
 const ASSETS = [
   "./",
   "./index.html",
@@ -8,6 +8,7 @@ const ASSETS = [
   "./css/components.css",
   "./css/training.css",
   "./css/screens.css",
+  "./js/migrations.js",
   "./js/data.js",
   "./js/storage.js",
   "./js/stats.js",
@@ -16,26 +17,45 @@ const ASSETS = [
   "./js/workout.js",
   "./js/app.js",
   "./manifest.json",
+  "./version.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
 ];
 
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
+});
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(ASSETS).catch(() => cache.addAll(["./index.html"])))
+    caches.open(CACHE).then((cache) => cache.addAll(ASSETS).catch(() => cache.addAll(["./index.html", "./version.json"])))
   );
-  self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  const url = new URL(event.request.url);
+  // version.json always network-first for update checks
+  if (url.pathname.endsWith("version.json")) {
+    event.respondWith(
+      fetch(event.request)
+        .then((res) => {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(event.request, copy)).catch(() => {});
+          return res;
+        })
+        .catch(() => caches.match(event.request))
+    );
+    return;
+  }
   event.respondWith(
     caches.match(event.request).then((hit) => {
       if (hit) return hit;
