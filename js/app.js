@@ -1732,16 +1732,16 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
           </div>
         </div>`);
       $("#confirmImport").onclick = () => {
-        try {
-          S.importPayload(data);
+        const result = S.importPayload(data);
+        if (result && result.ok) {
           state.session = S.getSession();
           closeOverlay();
           showToast("备份已恢复");
           renderHome();
-        } catch (err) {
-          closeOverlay();
-          showToast("恢复失败，原数据未改动");
+          return;
         }
+        closeOverlay();
+        showToast(result?.error || "恢复失败，原数据已安全保留。");
       };
     };
     reader.readAsText(file);

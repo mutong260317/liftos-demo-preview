@@ -88,21 +88,83 @@ LiftOS.Storage = (() => {
     };
   }
 
+  const SUPPORTED_EXPORT_VERSIONS = new Set([1]);
+
+  /** Snapshot only LiftOS business keys (presence + parsed value). */
+  function captureCurrentState() {
+    const keys = [KEYS.plans, KEYS.history, KEYS.notes, KEYS.prefs, KEYS.session, KEYS.schemaVersion];
+    const snap = { keys: {} };
+    keys.forEach((k) => {
+      const raw = localStorage.getItem(k);
+      if (raw == null) {
+        snap.keys[k] = { present: false, raw: null };
+      } else {
+        snap.keys[k] = { present: true, raw };
+      }
+    });
+    return snap;
+  }
+
+  /** Restore snapshot: missing keys stay missing; never localStorage.clear(). */
+  function restoreState(snapshot) {
+    if (!snapshot || !snapshot.keys) throw new Error("invalid snapshot");
+    Object.keys(snapshot.keys).forEach((k) => {
+      const cell = snapshot.keys[k];
+      if (!cell.present) localStorage.removeItem(k);
+      else localStorage.setItem(k, cell.raw);
+    });
+    return true;
+  }
+
   function validateImport(data) {
-    if (!data || typeof data !== "object") return { ok: false, error: "不是有效 JSON 对象" };
-    if (data.exportVersion == null) return { ok: false, error: "缺少 exportVersion" };
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      return { ok: false, error: "不是有效 JSON 对象" };
+    }
+    if (data.exportVersion == null) {
+      return { ok: false, error: "缺少 exportVersion" };
+    }
+    if (!SUPPORTED_EXPORT_VERSIONS.has(data.exportVersion)) {
+      return {
+        ok: false,
+        error: "当前 LiftOS 不支持此备份格式，请先升级 App。",
+        code: "UNSUPPORTED_EXPORT_VERSION",
+      };
+    }
+
+    // schemaVersion: missing → treat as legacy (pre-schema); reject future
+    let schemaVersion = LiftOS.CURRENT_SCHEMA_VERSION;
+    if (data.schemaVersion != null) {
+      if (typeof data.schemaVersion !== "number" || !Number.isFinite(data.schemaVersion)) {
+        return { ok: false, error: "schemaVersion 无效", code: "INVALID_SCHEMA" };
+      }
+      if (data.schemaVersion > LiftOS.CURRENT_SCHEMA_VERSION) {
+        return {
+          ok: false,
+          error: "此备份由更高版本 LiftOS 创建，请先升级 App 后再恢复。",
+          code: "FUTURE_SCHEMA",
+        };
+      }
+      if (data.schemaVersion < 0) {
+        return { ok: false, error: "schemaVersion 无效", code: "INVALID_SCHEMA" };
+      }
+      schemaVersion = data.schemaVersion;
+    }
+
     if (!Array.isArray(data.plans)) return { ok: false, error: "plans 必须是数组" };
     if (!Array.isArray(data.history)) return { ok: false, error: "history 必须是数组" };
-    if (data.notes != null && typeof data.notes !== "object") return { ok: false, error: "notes 结构无效" };
-    // basic per-item checks
+    if (data.notes != null && (typeof data.notes !== "object" || Array.isArray(data.notes))) {
+      return { ok: false, error: "notes 结构无效" };
+    }
     if (data.history.some((h) => !h || typeof h !== "object" || !h.id)) {
       return { ok: false, error: "history 条目缺少 id" };
     }
     if (data.plans.some((p) => !p || typeof p !== "object" || !p.id || !Array.isArray(p.exercises))) {
       return { ok: false, error: "plan 结构无效" };
     }
+
     return {
       ok: true,
+      schemaVersion,
       summary: {
         history: data.history.length,
         plans: data.plans.length,
@@ -116,7 +178,6 @@ LiftOS.Storage = (() => {
     const payload = exportPayload();
     const key = `liftos.backup.${tag}.${Date.now()}`;
     write(key, payload);
-    // keep last 3 backups
     try {
       const keys = Object.keys(localStorage)
         .filter((k) => k.startsWith("liftos.backup."))
@@ -128,23 +189,114 @@ LiftOS.Storage = (() => {
     return key;
   }
 
-  /** Restore from validated import. Caller must validate first. */
-  function importPayload(data) {
-    snapshotBackup("pre-import");
-    write(KEYS.plans, data.plans);
-    write(KEYS.history, data.history);
-    write(KEYS.notes, data.notes || {});
-    if (data.prefs && typeof data.prefs === "object") write(KEYS.prefs, data.prefs);
-    if (data.activeSession) write(KEYS.session, data.activeSession);
-    else localStorage.removeItem(KEYS.session);
-    if (typeof data.schemaVersion === "number" && data.schemaVersion > 0) {
-      localStorage.setItem(KEYS.schemaVersion, String(Math.min(data.schemaVersion, LiftOS.CURRENT_SCHEMA_VERSION)));
+  /** Re-read and assert imported structures are still valid. */
+  function postImportIntegrityCheck() {
+    const plans = read(KEYS.plans, null);
+    const history = read(KEYS.history, null);
+    const notes = read(KEYS.notes, null);
+    const prefs = read(KEYS.prefs, null);
+    const session = read(KEYS.session, null);
+    const schemaRaw = localStorage.getItem(KEYS.schemaVersion);
+    const schema = schemaRaw == null ? null : parseInt(schemaRaw, 10);
+
+    if (!Array.isArray(plans)) return { ok: false, error: "plans 校验失败" };
+    if (!Array.isArray(history)) return { ok: false, error: "history 校验失败" };
+    if (!notes || typeof notes !== "object" || Array.isArray(notes)) return { ok: false, error: "notes 校验失败" };
+    if (!prefs || typeof prefs !== "object" || Array.isArray(prefs)) return { ok: false, error: "prefs 校验失败" };
+    if (session != null && (typeof session !== "object" || Array.isArray(session))) {
+      return { ok: false, error: "session 校验失败" };
     }
-    // re-run migrations for older backups
+    if (schema != null && (!Number.isFinite(schema) || schema < 0 || schema > LiftOS.CURRENT_SCHEMA_VERSION)) {
+      return { ok: false, error: "schemaVersion 校验失败" };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Atomic import: all-or-nothing.
+   * Order: validate → capture → backup → write business data → migrate →
+   * integrity check → commit schemaVersion. Any failure restores capture.
+   */
+  function importPayload(data, options = {}) {
+    const v = validateImport(data);
+    if (!v.ok) {
+      return { ok: false, error: v.error, code: v.code || "VALIDATE" };
+    }
+
+    const original = captureCurrentState();
+    let backedUp = false;
     try {
-      LiftOS.Migrations.run();
-    } catch (_) {}
-    return true;
+      snapshotBackup("pre-import");
+      backedUp = true;
+    } catch (err) {
+      // backup is extra insurance; still proceed with in-memory rollback
+      console.error("LiftOS import: snapshotBackup failed", err);
+    }
+
+    // optional test hook: force failure at a specific write step
+    const failAt = options.__failAt || null;
+    const shouldFail = (step) => failAt === step;
+
+    try {
+      if (shouldFail("plans")) throw new Error("forced fail plans");
+      write(KEYS.plans, data.plans);
+
+      if (shouldFail("history")) throw new Error("forced fail history");
+      write(KEYS.history, data.history);
+
+      if (shouldFail("notes")) throw new Error("forced fail notes");
+      write(KEYS.notes, data.notes || {});
+
+      if (shouldFail("prefs")) throw new Error("forced fail prefs");
+      if (data.prefs && typeof data.prefs === "object") write(KEYS.prefs, data.prefs);
+
+      if (shouldFail("session")) throw new Error("forced fail session");
+      if (data.activeSession) write(KEYS.session, data.activeSession);
+      else localStorage.removeItem(KEYS.session);
+
+      // Business data written. Align schema to import source, then migrate up.
+      // Do NOT commit CURRENT_SCHEMA_VERSION until integrity passes.
+      if (shouldFail("migrate")) throw new Error("forced fail migrate");
+      const importSchema = v.schemaVersion; // missing → CURRENT in validate; prefer explicit
+      let startSchema = typeof data.schemaVersion === "number" ? data.schemaVersion : 1;
+      if (startSchema > LiftOS.CURRENT_SCHEMA_VERSION) startSchema = LiftOS.CURRENT_SCHEMA_VERSION;
+      localStorage.setItem(KEYS.schemaVersion, String(startSchema));
+      try {
+        LiftOS.Migrations.run();
+      } catch (err) {
+        console.error("LiftOS import: migration failed", err);
+        throw err;
+      }
+
+      if (shouldFail("integrity")) throw new Error("forced fail integrity");
+      const check = postImportIntegrityCheck();
+      if (!check.ok) throw new Error(check.error || "post-import integrity failed");
+
+      // Success: commit schema version last
+      localStorage.setItem(KEYS.schemaVersion, String(LiftOS.CURRENT_SCHEMA_VERSION));
+      return { ok: true, backedUp, schemaVersion: LiftOS.CURRENT_SCHEMA_VERSION };
+    } catch (err) {
+      console.error("LiftOS import failed, rolling back", err);
+      try {
+        restoreState(original);
+        return {
+          ok: false,
+          error: "恢复失败，原数据已安全保留。",
+          code: "ROLLBACK_OK",
+          rolledBack: true,
+          cause: String(err && err.message ? err.message : err),
+        };
+      } catch (rbErr) {
+        console.error("LiftOS import rollback ALSO failed", rbErr);
+        return {
+          ok: false,
+          error: "恢复失败，请不要继续操作，并使用最近备份恢复数据。",
+          code: "ROLLBACK_FAILED",
+          rolledBack: false,
+          cause: String(err && err.message ? err.message : err),
+        };
+      }
+    }
   }
 
   return {
@@ -194,6 +346,9 @@ LiftOS.Storage = (() => {
     validateImport,
     importPayload,
     snapshotBackup,
+    captureCurrentState,
+    restoreState,
+    postImportIntegrityCheck,
     downloadExport(filename) {
       const payload = exportPayload();
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });

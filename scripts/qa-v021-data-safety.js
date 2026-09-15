@@ -192,10 +192,12 @@ async function run() {
           exercises: [{ exerciseId: "pullup", name: "引体", sets: [{ type: "work", weight: 0, reps: 10 }] }],
         },
       ]);
-      const v = LiftOS.Storage.validateImport(payload);
-      if (!v.ok) return { ok: false, err: v.error };
-      LiftOS.Storage.importPayload(payload);
-      return { ok: true, has: LiftOS.Storage.getHistory().some((h) => h.id === "ws_imported_x") };
+      const result = LiftOS.Storage.importPayload(payload);
+      return {
+        ok: !!(result && result.ok),
+        has: LiftOS.Storage.getHistory().some((h) => h.id === "ws_imported_x"),
+        error: result && result.error,
+      };
     }, exported);
     results.push(log("JSON import success", importOk.ok && importOk.has, JSON.stringify(importOk)));
 
@@ -273,6 +275,230 @@ async function run() {
     await page.waitForTimeout(300);
     const demoHist = await page.evaluate(() => LiftOS.Storage.getHistory().length);
     results.push(log("?demo=1 can load SeedHistory", demoHist > 0, `len=${demoHist}`));
+
+    /* ===== Import atomicity / version gates (Review Round 1) ===== */
+    await page.goto(INDEX, { waitUntil: "load" });
+    await page.evaluate(() => localStorage.clear());
+    await page.goto(INDEX, { waitUntil: "load" });
+    await page.waitForTimeout(300);
+
+    // seed a known baseline
+    await page.evaluate(() => {
+      const plan = {
+        id: "plan_base",
+        name: "BASE PLAN",
+        muscleLabel: "基线",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        exercises: [{ exerciseId: "bench", order: 0, workSets: 3, repMin: 5, repMax: 8, targetRirMin: 1, targetRirMax: 2, restSeconds: 150, progressionRuleId: "double" }],
+      };
+      const plans = [plan];
+      localStorage.setItem("liftos.plans", JSON.stringify(plans));
+      localStorage.setItem("liftos.history", JSON.stringify([{ id: "ws_base", date: LiftOS.localDateKey(), planName: "BASE", volume: 1, workSets: 1, exercises: [] }]));
+      localStorage.setItem("liftos.notes", JSON.stringify({ bench: "基线备注" }));
+      localStorage.setItem("liftos.prefs", JSON.stringify({ theme: "dark", restDefault: 90, weeklyTarget: 5, bodyWeight: 90, goal: "x", name: "牧童" }));
+      localStorage.setItem("liftos.schemaVersion", "4");
+    });
+
+    function snapKeys() {
+      return page.evaluate(() => {
+        const keys = ["liftos.plans", "liftos.history", "liftos.notes", "liftos.prefs", "liftos.session", "liftos.schemaVersion"];
+        const out = {};
+        keys.forEach((k) => {
+          const raw = localStorage.getItem(k);
+          out[k] = raw;
+        });
+        return out;
+      });
+    }
+
+    const baseSnap = await snapKeys();
+
+    // Test A — rollback on history write failure
+    const testA = await page.evaluate(() => {
+      const payload = LiftOS.Storage.exportPayload();
+      payload.history = payload.history.concat([
+        { id: "ws_should_not_stay", date: LiftOS.localDateKey(), planName: "X", volume: 1, workSets: 1, exercises: [] },
+      ]);
+      payload.plans = [{ id: "plan_new_a", name: "NEW A", muscleLabel: "n", createdAt: 1, updatedAt: 1, exercises: [{ exerciseId: "squat", order: 0, workSets: 3, repMin: 5, repMax: 8, targetRirMin: 1, targetRirMax: 2, restSeconds: 120, progressionRuleId: "double" }] }];
+      payload.notes = { bench: "NEW NOTE A" };
+      const result = LiftOS.Storage.importPayload(payload, { __failAt: "history" });
+      return {
+        result,
+        plans: JSON.parse(localStorage.getItem("liftos.plans")),
+        history: JSON.parse(localStorage.getItem("liftos.history")),
+        notes: JSON.parse(localStorage.getItem("liftos.notes")),
+        schema: localStorage.getItem("liftos.schemaVersion"),
+      };
+    });
+    results.push(
+      log(
+        "Test A rollback on history fail",
+        testA.result.ok === false &&
+          testA.result.rolledBack === true &&
+          testA.plans.some((p) => p.id === "plan_base") &&
+          !testA.plans.some((p) => p.id === "plan_new_a") &&
+          testA.history.some((h) => h.id === "ws_base") &&
+          !testA.history.some((h) => h.id === "ws_should_not_stay") &&
+          testA.notes.bench === "基线备注" &&
+          testA.schema === "4",
+        JSON.stringify({ code: testA.result.code, plans: testA.plans.map((p) => p.id) })
+      )
+    );
+
+    // Test B — rollback on notes write failure
+    const testB = await page.evaluate(() => {
+      const payload = LiftOS.Storage.exportPayload();
+      payload.notes = { bench: "SHOULD_NOT_STAY", squat: "x" };
+      const result = LiftOS.Storage.importPayload(payload, { __failAt: "notes" });
+      const notes = JSON.parse(localStorage.getItem("liftos.notes"));
+      const plans = JSON.parse(localStorage.getItem("liftos.plans"));
+      return { result, notes, plansHasBase: plans.some((p) => p.id === "plan_base") };
+    });
+    results.push(
+      log(
+        "Test B rollback on notes fail",
+        testB.result.ok === false && testB.notes.bench === "基线备注" && testB.plansHasBase,
+        JSON.stringify(testB.result)
+      )
+    );
+
+    // Test C — rollback preserves missing session key
+    const testC = await page.evaluate(() => {
+      localStorage.removeItem("liftos.session");
+      const payload = LiftOS.Storage.exportPayload();
+      payload.activeSession = { id: "ws_new_session", planId: "pushA", planName: "PUSH A", startTime: Date.now(), exIndex: 0, exercises: [], prs: [], version: 2 };
+      const result = LiftOS.Storage.importPayload(payload, { __failAt: "integrity" });
+      return {
+        result,
+        sessionPresent: localStorage.getItem("liftos.session") != null,
+        historyStillBase: JSON.parse(localStorage.getItem("liftos.history")).some((h) => h.id === "ws_base"),
+      };
+    });
+    results.push(
+      log(
+        "Test C missing session stays missing on rollback",
+        testC.result.ok === false && testC.sessionPresent === false && testC.historyStillBase,
+        JSON.stringify({ sessionPresent: testC.sessionPresent, code: testC.result.code })
+      )
+    );
+
+    // Test D — future schema rejected, data unchanged
+    const testD = await page.evaluate(() => {
+      const before = LiftOS.Storage.getHistory().map((h) => h.id);
+      const v = LiftOS.Storage.validateImport({ exportVersion: 1, schemaVersion: 999, plans: [], history: [] });
+      const r = LiftOS.Storage.importPayload({ exportVersion: 1, schemaVersion: 999, plans: [], history: [] });
+      const after = LiftOS.Storage.getHistory().map((h) => h.id);
+      return { v, r, before, after };
+    });
+    results.push(
+      log(
+        "Test D future schema rejected",
+        testD.v.ok === false && testD.v.code === "FUTURE_SCHEMA" && testD.r.ok === false && JSON.stringify(testD.before) === JSON.stringify(testD.after),
+        JSON.stringify(testD.v)
+      )
+    );
+
+    // Test E — unsupported exportVersion rejected
+    const testE = await page.evaluate(() => {
+      const beforeLen = LiftOS.Storage.getHistory().length;
+      const v = LiftOS.Storage.validateImport({ exportVersion: 2, plans: [], history: [] });
+      const r = LiftOS.Storage.importPayload({ exportVersion: 2, plans: [], history: [] });
+      return { v, r, beforeLen, afterLen: LiftOS.Storage.getHistory().length };
+    });
+    results.push(
+      log(
+        "Test E exportVersion 2 rejected",
+        testE.v.ok === false && /不支持|升级/.test(testE.v.error || "") && testE.r.ok === false && testE.beforeLen === testE.afterLen,
+        JSON.stringify(testE.v)
+      )
+    );
+
+    // Test F — older schema migration on import
+    const testF = await page.evaluate(() => {
+      const seed = LiftOS.SeedHistory.map((x) => ({ ...x }));
+      const payload = {
+        exportVersion: 1,
+        schemaVersion: 3,
+        plans: LiftOS.Storage.getPlans(),
+        history: seed.concat([{ id: "ws_keep_f", date: LiftOS.localDateKey(), planName: "P", volume: 1, workSets: 1, exercises: [] }]),
+        notes: {
+          incline: "座椅调到 4\n靠背 30°\n肩胛下沉\n不要耸肩",
+          bench: "用户保留",
+        },
+        prefs: LiftOS.Storage.getPrefs(),
+        activeSession: null,
+      };
+      const result = LiftOS.Storage.importPayload(payload);
+      const hist = LiftOS.Storage.getHistory();
+      const seedIds = new Set(LiftOS.SeedHistory.map((x) => x.id));
+      return {
+        result,
+        schema: localStorage.getItem("liftos.schemaVersion"),
+        hasKeep: hist.some((h) => h.id === "ws_keep_f"),
+        hasSeed: hist.some((h) => seedIds.has(h.id)),
+        notes: LiftOS.Storage.getNotes(),
+      };
+    });
+    results.push(
+      log(
+        "Test F schema3 import migrates to 4",
+        testF.result.ok === true &&
+          testF.schema === "4" &&
+          testF.hasKeep === true &&
+          testF.hasSeed === false &&
+          (testF.notes.incline == null || testF.notes.incline === "") &&
+          testF.notes.bench === "用户保留",
+        JSON.stringify({ schema: testF.schema, hasSeed: testF.hasSeed, hasKeep: testF.hasKeep })
+      )
+    );
+
+    // Test G — valid import still succeeds
+    const testG = await page.evaluate(() => {
+      const payload = LiftOS.Storage.exportPayload();
+      payload.history = payload.history.concat([
+        { id: "ws_g_ok", date: LiftOS.localDateKey(), planName: "G", volume: 9, workSets: 1, exercises: [] },
+      ]);
+      const result = LiftOS.Storage.importPayload(payload);
+      return { result, has: LiftOS.Storage.getHistory().some((h) => h.id === "ws_g_ok"), schema: localStorage.getItem("liftos.schemaVersion") };
+    });
+    results.push(log("Test G valid import succeeds", testG.result.ok === true && testG.has && testG.schema === "4", JSON.stringify(testG.result)));
+
+    // Test H — post-import integrity failure rolls back
+    const testH = await page.evaluate(() => {
+      const beforePlans = localStorage.getItem("liftos.plans");
+      const payload = LiftOS.Storage.exportPayload();
+      payload.notes = { bench: "H" };
+      // force integrity fail step
+      const result = LiftOS.Storage.importPayload(payload, { __failAt: "integrity" });
+      return {
+        result,
+        plansUnchanged: localStorage.getItem("liftos.plans") === beforePlans,
+        notes: LiftOS.Storage.getNotes(),
+      };
+    });
+    results.push(
+      log(
+        "Test H integrity fail rollback",
+        testH.result.ok === false && testH.result.rolledBack === true && testH.plansUnchanged && testH.notes.bench !== "H",
+        JSON.stringify({ code: testH.result.code, notes: testH.notes })
+      )
+    );
+
+    // missing exportVersion
+    const noExp = await page.evaluate(() => LiftOS.Storage.validateImport({ plans: [], history: [] }));
+    results.push(log("missing exportVersion rejected", noExp.ok === false, noExp.error));
+
+    // schemaVersion missing treated as legacy (allowed) — structure valid
+    const legacy = await page.evaluate(() => {
+      const payload = LiftOS.Storage.exportPayload();
+      delete payload.schemaVersion;
+      payload.history = payload.history.concat([{ id: "ws_legacy", date: LiftOS.localDateKey(), planName: "L", volume: 1, workSets: 1, exercises: [] }]);
+      const v = LiftOS.Storage.validateImport(payload);
+      const r = LiftOS.Storage.importPayload(payload);
+      return { vOk: v.ok, rOk: r.ok, has: LiftOS.Storage.getHistory().some((h) => h.id === "ws_legacy") };
+    });
+    results.push(log("missing schemaVersion allowed as legacy", legacy.vOk && legacy.rOk && legacy.has, JSON.stringify(legacy)));
 
     await page.screenshot({ path: path.join(OUT, "final.png") });
   } catch (err) {
