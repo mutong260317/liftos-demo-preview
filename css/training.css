@@ -83,6 +83,11 @@
   display: block; font-size: 12px; color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
+.set-row-compact .type-mini { font-size: 9px; color: var(--text-tertiary); margin-top: 2px; }
+.prev-tag {
+  display: inline-block; background: var(--bg-input); color: var(--text-tertiary);
+  font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; margin-right: 4px;
+}
 .set-done-meta {
   padding: 0 12px 10px;
   font-size: var(--fs-caption);
