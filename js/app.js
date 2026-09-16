@@ -1065,15 +1065,24 @@ LiftOS.UI = (() => {
   let stopwatchTimer = null;
   let stopwatchStart = 0;
   let stopwatchSetIdx = null;
+  function stopStopwatch(cancelOnly) {
+    if (!stopwatchTimer) return;
+    clearInterval(stopwatchTimer);
+    stopwatchTimer = null;
+    if (!cancelOnly && stopwatchStart) {
+      const elapsed = Math.round((Date.now() - stopwatchStart) / 1000);
+      if (elapsed > 0 && state.session && stopwatchSetIdx != null) {
+        W.updateSetField(state.session, stopwatchSetIdx, "durationSec", elapsed);
+      }
+    }
+    stopwatchStart = 0;
+    stopwatchSetIdx = null;
+  }
+
   function startStopwatch(i) {
     if (stopwatchTimer) {
-      clearInterval(stopwatchTimer);
-      stopwatchTimer = null;
-      const elapsed = Math.round((Date.now() - stopwatchStart) / 1000);
-      if (elapsed > 0) {
-        W.updateSetField(state.session, i, "durationSec", elapsed);
-        showToast(`秒表已写入 ${elapsed}s`);
-      }
+      stopStopwatch(false);
+      showToast("秒表已停止并写入");
       renderSetList();
       return;
     }
@@ -1589,7 +1598,7 @@ LiftOS.UI = (() => {
     openOverlay(`
       <div class="modal" onclick="event.stopPropagation()">
         <h3>撤销完成？</h3>
-        <p>${set.weight}kg × ${set.reps}${set.rir != null ? ` · RIR ${set.rir}` : ""}</p>
+        <p>${esc(LiftOS.Gym.formatLoad(set))}${set.rir != null ? ` · RIR ${set.rir}` : set.durationSec != null && set.reps == null ? "" : " · RIR 未记录"}</p>
         <div class="modal-actions">
           <button class="btn btn-primary" onclick="App.doUndo(${i})">撤销</button>
           <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
@@ -1749,6 +1758,7 @@ LiftOS.UI = (() => {
   }
 
   function abandonWorkout() {
+    stopStopwatch(true);
     applyWakeLock(false);
     W.abandon();
     state.session = null;
@@ -1759,6 +1769,7 @@ LiftOS.UI = (() => {
 
   function endWorkout() {
     closeOverlay();
+    stopStopwatch(true);
     applyWakeLock(false);
     const session = state.session || S.getSession();
     if (!session) {
@@ -1818,6 +1829,7 @@ LiftOS.UI = (() => {
   }
 
   function finishSummary() {
+    stopStopwatch(true);
     applyWakeLock(false);
     const session = state.session || S.getSession();
     if (!session) {
@@ -2011,7 +2023,7 @@ LiftOS.UI = (() => {
                     .map(
                       (r) => `<div class="history-session">
                         <div class="date">${esc(r.date)} · ${esc(r.planName || "")}</div>
-                        ${r.sets.map((s) => `<div class="set-line">${s.weight}kg × ${s.reps}${s.rir != null ? ` · RIR ${s.rir}` : ""}</div>`).join("")}
+                        ${r.sets.map((s) => `<div class="set-line">${esc(LiftOS.Gym.formatLoad(s))}${s.rir != null ? ` · RIR ${s.rir}` : ""}</div>`).join("")}
                       </div>`
                     )
                     .join("")
@@ -2295,7 +2307,13 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     setTheme(prefs.theme || "dark");
     state.session = S.getSession();
     const about = $("#aboutVersion");
-    if (about) about.textContent = `v${LiftOS.APP_VERSION || "0.3.0"}`;
+    if (about) about.textContent = `v${LiftOS.APP_VERSION || "0.3.1"}`;
+    try {
+      const corrupt = S.detectCorruption ? S.detectCorruption() : [];
+      if (corrupt.length) {
+        setTimeout(() => showToast("部分本地数据损坏，已备份原始内容，请勿连续覆盖", ""), 400);
+      }
+    } catch (_) {}
     const ka = $("#keepAwakeLabel");
     if (ka) ka.textContent = prefs.keepAwake === false ? "关" : "开";
 
@@ -2600,6 +2618,7 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     stepDuration,
     openDurationInput,
     saveModalDuration,
+    stopStopwatch,
     startStopwatch,
     openWarmupCalc,
     applyWarmupCalc,

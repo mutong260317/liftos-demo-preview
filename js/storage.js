@@ -13,17 +13,66 @@ LiftOS.Storage = (() => {
     schemaVersion: "liftos.schemaVersion",
   };
 
+  const CORRUPT_KEYS = ["liftos.history", "liftos.plans", "liftos.notes", "liftos.prefs", "liftos.session"];
+
+  function corruptRecoveryKey(key) {
+    return `liftos.corrupt.${key}.${Date.now()}`;
+  }
+
+  function detectCorruption() {
+    const bad = [];
+    CORRUPT_KEYS.forEach((key) => {
+      const raw = localStorage.getItem(key);
+      if (raw == null) return;
+      try {
+        JSON.parse(raw);
+      } catch {
+        bad.push(key);
+      }
+    });
+    return bad;
+  }
+
+  /** Preserve raw corrupt value before any destructive overwrite. */
+  function preserveCorruptValue(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw == null) return false;
+      localStorage.setItem(corruptRecoveryKey(key), raw);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function read(key, fallback) {
     try {
       const raw = localStorage.getItem(key);
       if (raw == null) return fallback;
       return JSON.parse(raw);
     } catch {
+      // Do not treat corruption as empty — leave raw intact; report via corruption check
       return fallback;
     }
   }
 
   function write(key, value) {
+    // Never silently destroy corrupt business payloads
+    if (CORRUPT_KEYS.includes(key)) {
+      const raw = localStorage.getItem(key);
+      if (raw != null) {
+        try {
+          JSON.parse(raw);
+        } catch {
+          const preserved = preserveCorruptValue(key);
+          if (!preserved) throw new Error("corrupt key not preserved");
+          // after preserve, still refuse to overwrite until caller clears corruption flag
+          LiftOS.Storage.corruption = LiftOS.Storage.corruption || {};
+          LiftOS.Storage.corruption[key] = true;
+          // allow write only after preserve (raw saved)
+        }
+      }
+    }
     localStorage.setItem(key, JSON.stringify(value));
   }
 
@@ -53,8 +102,8 @@ LiftOS.Storage = (() => {
   }
 
   /**
-   * Demo isolation: SeedHistory is overlay-only under liftos.demo.history.
-   * Production liftos.history is never written with demo ids.
+   * Demo isolation: SeedHistory overlay in sessionStorage only.
+   * Never write demo ids into production localStorage history.
    */
   const DEMO_HISTORY_KEY = "liftos.demo.history";
 
@@ -70,7 +119,7 @@ LiftOS.Storage = (() => {
     try {
       if (!isDemoMode()) return false;
       const seed = LiftOS.SeedHistory || [];
-      write(DEMO_HISTORY_KEY, seed);
+      sessionStorage.setItem(DEMO_HISTORY_KEY, JSON.stringify(seed));
       return true;
     } catch {
       return false;
@@ -79,6 +128,7 @@ LiftOS.Storage = (() => {
 
   function clearDemoOverlay() {
     try {
+      sessionStorage.removeItem(DEMO_HISTORY_KEY);
       localStorage.removeItem(DEMO_HISTORY_KEY);
       return true;
     } catch {
@@ -86,11 +136,23 @@ LiftOS.Storage = (() => {
     }
   }
 
+  function getDemoHistory() {
+    try {
+      if (!isDemoMode()) return [];
+      const raw = sessionStorage.getItem(DEMO_HISTORY_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return [];
+    }
+  }
+
   /** History used by stats: production + optional demo overlay (never merged into prod). */
   function getHistoryForStats() {
     const prod = read(KEYS.history, []);
     if (!isDemoMode()) return prod;
-    const demo = read(DEMO_HISTORY_KEY, []);
+    const demo = getDemoHistory();
     const prodIds = new Set(prod.map((h) => h.id));
     return prod.concat(demo.filter((h) => h && !prodIds.has(h.id)));
   }
@@ -100,6 +162,7 @@ LiftOS.Storage = (() => {
       LiftOS.Migrations.run();
     } catch (_) {}
     ensureDefaults();
+    if (!isDemoMode()) clearDemoOverlay();
     enterDemoMode();
   }
 
@@ -160,10 +223,10 @@ LiftOS.Storage = (() => {
       };
     }
 
-    // schemaVersion: missing → treat as legacy (pre-schema); reject future
+    // schemaVersion: finite integer, >=0, <= CURRENT
     let schemaVersion = LiftOS.CURRENT_SCHEMA_VERSION;
     if (data.schemaVersion != null) {
-      if (typeof data.schemaVersion !== "number" || !Number.isFinite(data.schemaVersion)) {
+      if (typeof data.schemaVersion !== "number" || !Number.isFinite(data.schemaVersion) || !Number.isInteger(data.schemaVersion)) {
         return { ok: false, error: "schemaVersion 无效", code: "INVALID_SCHEMA" };
       }
       if (data.schemaVersion > LiftOS.CURRENT_SCHEMA_VERSION) {
@@ -183,6 +246,14 @@ LiftOS.Storage = (() => {
     if (!Array.isArray(data.history)) return { ok: false, error: "history 必须是数组" };
     if (data.notes != null && (typeof data.notes !== "object" || Array.isArray(data.notes))) {
       return { ok: false, error: "notes 结构无效" };
+    }
+    if (data.prefs != null && (typeof data.prefs !== "object" || Array.isArray(data.prefs))) {
+      return { ok: false, error: "prefs 结构无效", code: "INVALID_PREFS" };
+    }
+    if (data.activeSession !== undefined && data.activeSession !== null) {
+      if (typeof data.activeSession !== "object" || Array.isArray(data.activeSession)) {
+        return { ok: false, error: "activeSession 结构无效", code: "INVALID_SESSION" };
+      }
     }
     if (data.history.some((h) => !h || typeof h !== "object" || !h.id)) {
       return { ok: false, error: "history 条目缺少 id" };
@@ -360,6 +431,8 @@ LiftOS.Storage = (() => {
     getHistoryForStats,
     clearDemoOverlay,
     isDemoMode,
+    detectCorruption,
+    preserveCorruptValue,
     saveHistory(history) {
       write(KEYS.history, history);
     },

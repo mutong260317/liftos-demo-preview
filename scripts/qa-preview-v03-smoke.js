@@ -35,7 +35,7 @@ function findBrowser() {
     await page.waitForTimeout(400);
 
     results.push(log("home", /准备练什么/.test((await page.locator("#greetTitle").textContent()) || "")));
-    results.push(log("APP version", (await page.evaluate(() => LiftOS.APP_VERSION)) === "0.3.0"));
+    results.push(log("APP version", (await page.evaluate(() => LiftOS.APP_VERSION)) === "0.3.1"));
     results.push(log("fresh history empty", (await page.evaluate(() => LiftOS.Storage.getHistory().length)) === 0));
 
     // start plan workout

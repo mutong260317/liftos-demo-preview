@@ -31,7 +31,18 @@ self.addEventListener("message", (event) => {
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(ASSETS).catch(() => cache.addAll(["./index.html", "./version.json"])))
+    caches.open(CACHE).then(async (cache) => {
+      // Cache each asset independently so one failure does not discard the rest
+      await Promise.all(
+        ASSETS.map((url) =>
+          cache.add(url).catch(() => {
+            /* optional asset failed — continue */
+          })
+        )
+      );
+      // Guarantee core shell
+      await Promise.all(["./index.html", "./version.json"].map((u) => cache.add(u).catch(() => {})));
+    })
   );
 });
 

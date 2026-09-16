@@ -360,22 +360,10 @@ LiftOS.Workout = (() => {
 
     const idx = session.exIndex;
     const oldGroup = ex.supersetGroup;
-    const members = session.exercises.filter((e) => e.supersetGroup === oldGroup && !e.skipped);
-    // Orphan cleanup: new exercise inherits group only if at least one other member remains; else unlink all
     let supersetGroup;
     if (oldGroup) {
-      const others = session.exercises.filter((e, i) => e.supersetGroup === oldGroup && i !== idx);
-      if (others.length >= 1) {
-        supersetGroup = oldGroup;
-        // clear group from any remaining orphan single members after replace
-        others.forEach((o) => {
-          if (!o.supersetGroup) o.supersetGroup = oldGroup;
-        });
-      } else {
-        session.exercises.forEach((e) => {
-          if (e.supersetGroup === oldGroup) delete e.supersetGroup;
-        });
-      }
+      const others = session.exercises.filter((e, i) => i !== idx && e.supersetGroup === oldGroup);
+      if (others.length >= 1) supersetGroup = oldGroup;
     }
     session.exercises[idx] = {
       id: uid("ex"),
@@ -390,14 +378,41 @@ LiftOS.Workout = (() => {
       notes: St().getNote(newExerciseId),
       replacedFrom: { id: ex.exerciseId, name: ex.name },
     };
+    normalizeSupersetGroups(session);
     save(session);
     return true;
+  }
+
+  /** Invariant: every remaining superset group has >=2 non-skipped members. */
+  function normalizeSupersetGroups(session) {
+    if (!session?.exercises?.length) return;
+    const counts = {};
+    session.exercises.forEach((e) => {
+      if (!e.supersetGroup || e.skipped) return;
+      counts[e.supersetGroup] = (counts[e.supersetGroup] || 0) + 1;
+    });
+    session.exercises.forEach((e) => {
+      if (e.supersetGroup && (e.skipped || (counts[e.supersetGroup] || 0) < 2)) {
+        // keep group only if >=2 active; skipped members keep group only if others remain
+        if ((counts[e.supersetGroup] || 0) < 2) delete e.supersetGroup;
+      }
+    });
+    // second pass: unlink any remaining group that now has <2 non-skipped
+    const counts2 = {};
+    session.exercises.forEach((e) => {
+      if (!e.supersetGroup || e.skipped) return;
+      counts2[e.supersetGroup] = (counts2[e.supersetGroup] || 0) + 1;
+    });
+    session.exercises.forEach((e) => {
+      if (e.supersetGroup && (counts2[e.supersetGroup] || 0) < 2) delete e.supersetGroup;
+    });
   }
 
   function skipExercise(session) {
     const ex = currentEx(session);
     if (!ex) return false;
     ex.skipped = true;
+    normalizeSupersetGroups(session);
     save(session);
     return nextExercise(session);
   }
@@ -781,6 +796,7 @@ LiftOS.Workout = (() => {
     setNotes,
     addExerciseToSession,
     replaceExercise,
+    normalizeSupersetGroups,
     skipExercise,
     nextExercise,
     linkSuperset,
