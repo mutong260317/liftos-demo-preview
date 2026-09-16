@@ -359,16 +359,35 @@ LiftOS.Workout = (() => {
     }
 
     const idx = session.exIndex;
+    const oldGroup = ex.supersetGroup;
+    const members = session.exercises.filter((e) => e.supersetGroup === oldGroup && !e.skipped);
+    // Orphan cleanup: new exercise inherits group only if at least one other member remains; else unlink all
+    let supersetGroup;
+    if (oldGroup) {
+      const others = session.exercises.filter((e, i) => e.supersetGroup === oldGroup && i !== idx);
+      if (others.length >= 1) {
+        supersetGroup = oldGroup;
+        // clear group from any remaining orphan single members after replace
+        others.forEach((o) => {
+          if (!o.supersetGroup) o.supersetGroup = oldGroup;
+        });
+      } else {
+        session.exercises.forEach((e) => {
+          if (e.supersetGroup === oldGroup) delete e.supersetGroup;
+        });
+      }
+    }
     session.exercises[idx] = {
       id: uid("ex"),
       exerciseId: newExerciseId,
       name: master.name,
       muscle: master.muscleLabel,
+      supersetGroup,
       planExercise: pe,
       sets,
       skipped: false,
       advice,
-      notes: St().getNote(newExerciseId), // independent notes
+      notes: St().getNote(newExerciseId),
       replacedFrom: { id: ex.exerciseId, name: ex.name },
     };
     save(session);

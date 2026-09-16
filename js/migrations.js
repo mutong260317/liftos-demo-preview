@@ -2,7 +2,7 @@
 
 window.LiftOS = window.LiftOS || {};
 
-LiftOS.APP_VERSION = "0.3.0";
+LiftOS.APP_VERSION = "0.3.1";
 LiftOS.CURRENT_SCHEMA_VERSION = 5;
 
 LiftOS.Migrations = (() => {

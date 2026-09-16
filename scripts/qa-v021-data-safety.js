@@ -175,7 +175,7 @@ async function run() {
         exported.exportVersion === 1 &&
           Array.isArray(exported.history) &&
           Array.isArray(exported.plans) &&
-          exported.appVersion === "0.3.0",
+          exported.appVersion === "0.3.1",
         `v=${exported.appVersion} hist=${exported.history.length}`
       )
     );
@@ -215,12 +215,12 @@ async function run() {
     // 13 version.json file exists + parse
     const versionFile = fs.readFileSync(path.join(ROOT, "version.json"), "utf8");
     const vj = JSON.parse(versionFile);
-    results.push(log("version.json", vj.version === "0.3.0", vj.version));
-    results.push(log("APP_VERSION const", (await page.evaluate(() => LiftOS.APP_VERSION)) === "0.3.0"));
+    results.push(log("version.json", vj.version === "0.3.1", vj.version));
+    results.push(log("APP_VERSION const", (await page.evaluate(() => LiftOS.APP_VERSION)) === "0.3.1"));
 
     // 14 SW cache version string
     const sw = fs.readFileSync(path.join(ROOT, "sw.js"), "utf8");
-    results.push(log("SW cache versioned", sw.includes('const CACHE = "liftos-v0.3.0"')));
+    results.push(log("SW cache versioned", sw.includes('const CACHE = "liftos-v0.3.1"')));
     results.push(log("SW handles SKIP_WAITING", sw.includes("SKIP_WAITING")));
 
     // 15 update available detection (unit)
@@ -322,7 +322,9 @@ async function run() {
       ]);
       payload.plans = [{ id: "plan_new_a", name: "NEW A", muscleLabel: "n", createdAt: 1, updatedAt: 1, exercises: [{ exerciseId: "squat", order: 0, workSets: 3, repMin: 5, repMax: 8, targetRirMin: 1, targetRirMax: 2, restSeconds: 120, progressionRuleId: "double" }] }];
       payload.notes = { bench: "NEW NOTE A" };
-      const result = LiftOS.Storage.importPayload(payload, { __failAt: "history" });
+      LiftOS.__TEST_FAIL_AT = "history";
+      const result = LiftOS.Storage.importPayload(payload);
+      LiftOS.__TEST_FAIL_AT = null;
       return {
         result,
         plans: JSON.parse(localStorage.getItem("liftos.plans")),
@@ -350,7 +352,9 @@ async function run() {
     const testB = await page.evaluate(() => {
       const payload = LiftOS.Storage.exportPayload();
       payload.notes = { bench: "SHOULD_NOT_STAY", squat: "x" };
-      const result = LiftOS.Storage.importPayload(payload, { __failAt: "notes" });
+      LiftOS.__TEST_FAIL_AT = "notes";
+      const result = LiftOS.Storage.importPayload(payload);
+      LiftOS.__TEST_FAIL_AT = null;
       const notes = JSON.parse(localStorage.getItem("liftos.notes"));
       const plans = JSON.parse(localStorage.getItem("liftos.plans"));
       return { result, notes, plansHasBase: plans.some((p) => p.id === "plan_base") };
@@ -368,7 +372,9 @@ async function run() {
       localStorage.removeItem("liftos.session");
       const payload = LiftOS.Storage.exportPayload();
       payload.activeSession = { id: "ws_new_session", planId: "pushA", planName: "PUSH A", startTime: Date.now(), exIndex: 0, exercises: [], prs: [], version: 2 };
-      const result = LiftOS.Storage.importPayload(payload, { __failAt: "integrity" });
+      LiftOS.__TEST_FAIL_AT = "integrity";
+      const result = LiftOS.Storage.importPayload(payload);
+      LiftOS.__TEST_FAIL_AT = null;
       return {
         result,
         sessionPresent: localStorage.getItem("liftos.session") != null,
@@ -470,7 +476,9 @@ async function run() {
       const payload = LiftOS.Storage.exportPayload();
       payload.notes = { bench: "H" };
       // force integrity fail step
-      const result = LiftOS.Storage.importPayload(payload, { __failAt: "integrity" });
+      LiftOS.__TEST_FAIL_AT = "integrity";
+      const result = LiftOS.Storage.importPayload(payload);
+      LiftOS.__TEST_FAIL_AT = null;
       return {
         result,
         plansUnchanged: localStorage.getItem("liftos.plans") === beforePlans,

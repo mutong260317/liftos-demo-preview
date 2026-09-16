@@ -26,5 +26,18 @@ jobs:
         run: node scripts/qa-v021-data-safety.js
       - name: Run V0.3 gym experience suite
         run: node scripts/qa-v03-gym-experience.js
+      - name: Run V0.3.1 stabilization suite
+        run: node scripts/qa-v031-stabilization.js
+      - name: Syntax check JS
+        run: |
+          node --check js/migrations.js
+          node --check js/data.js
+          node --check js/storage.js
+          node --check js/stats.js
+          node --check js/progression.js
+          node --check js/plans.js
+          node --check js/workout.js
+          node --check js/gym.js
+          node --check js/app.js
       - name: Run V0.3 round 5 volume suite
         run: node scripts/qa-v03-round5-volume.js

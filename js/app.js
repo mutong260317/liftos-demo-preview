@@ -207,7 +207,7 @@ LiftOS.UI = (() => {
   }
 
   function renderWeekStrip() {
-    const hist = S.getHistory();
+    const hist = historyForUi();
     const now = new Date();
     const day = now.getDay(); // 0 Sun
     const mondayOffset = day === 0 ? 6 : day - 1;
@@ -238,11 +238,11 @@ LiftOS.UI = (() => {
     const mondayOffset = day === 0 ? 6 : day - 1;
     const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset);
     const startIso = LiftOS.localDateKey(monday);
-    const hist = S.getHistory().filter((h) => h.date >= startIso);
+    const hist = historyForUi().filter((h) => h.date >= startIso);
     const prevMonday = new Date(monday.getTime() - 7 * 86400000);
     const prevStart = LiftOS.localDateKey(prevMonday);
     const prevEnd = startIso;
-    const prev = S.getHistory().filter((h) => h.date >= prevStart && h.date < prevEnd);
+    const prev = historyForUi().filter((h) => h.date >= prevStart && h.date < prevEnd);
 
     const vol = hist.reduce((a, h) => a + (h.volume || volumeOfHistory(h)), 0);
     const prevVol = prev.reduce((a, h) => a + (h.volume || volumeOfHistory(h)), 0);
@@ -264,6 +264,10 @@ LiftOS.UI = (() => {
       })
     );
     return v;
+  }
+
+  function historyForUi() {
+    return S.getHistoryForStats ? S.getHistoryForStats() : S.getHistory();
   }
 
   function renderHomeMuscles() {
@@ -2023,7 +2027,7 @@ LiftOS.UI = (() => {
   function renderData() {
     renderWeeklyReview();
     const range = state.dataRange;
-    const allHistory = S.getHistory();
+    const allHistory = historyForUi();
     const emptyBox = $("#dataEmpty");
     const dataMain = $("#dataMain");
     if (!allHistory.length) {
@@ -2118,7 +2122,7 @@ LiftOS.UI = (() => {
       .join("");
 
     // recent history with correction entry
-    const hist = S.getHistory().slice(0, 8);
+    const hist = historyForUi().slice(0, 8);
     const histEl = $("#dataHistoryList");
     if (histEl) {
       histEl.innerHTML = hist
@@ -2160,7 +2164,7 @@ LiftOS.UI = (() => {
   function renderProfile() {
     const prefs = S.getPrefs();
     $("#profileName").textContent = prefs.name || "训练者";
-    $("#profileGoal").textContent = `${prefs.goal || "综合"} · ${prefs.bodyWeight || "—"}kg`;
+    $("#profileGoal").textContent = `${prefs.goal || "力量训练"}${prefs.bodyWeight ? " · " + prefs.bodyWeight + "kg" : ""}`;
   }
 
   /* ---------- PLAN helpers used from HTML ---------- */

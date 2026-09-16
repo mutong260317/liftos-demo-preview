@@ -43,27 +43,56 @@ LiftOS.Storage = (() => {
         theme: "dark",
         restDefault: 90,
         weeklyTarget: 5,
-        bodyWeight: 90,
-        goal: "综合力量 + 减脂",
-        name: "牧童",
+        bodyWeight: null,
+        goal: "综合力量",
+        name: "训练者",
+        previousValueMode: "same_routine",
+        keepAwake: true,
       });
     }
   }
 
-  /** Dev/demo only: ?demo=1 loads SeedHistory for UI testing. Never auto. */
-  function loadDemoHistoryIfRequested() {
+  /**
+   * Demo isolation: SeedHistory is overlay-only under liftos.demo.history.
+   * Production liftos.history is never written with demo ids.
+   */
+  const DEMO_HISTORY_KEY = "liftos.demo.history";
+
+  function isDemoMode() {
     try {
-      const q = new URLSearchParams(location.search);
-      if (q.get("demo") !== "1") return false;
-      const hist = read(KEYS.history, []);
+      return new URLSearchParams(location.search).get("demo") === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function enterDemoMode() {
+    try {
+      if (!isDemoMode()) return false;
       const seed = LiftOS.SeedHistory || [];
-      const seedIds = new Set(seed.map((x) => x.id));
-      const merged = hist.filter((h) => !seedIds.has(h.id)).concat(seed);
-      write(KEYS.history, merged);
+      write(DEMO_HISTORY_KEY, seed);
       return true;
     } catch {
       return false;
     }
+  }
+
+  function clearDemoOverlay() {
+    try {
+      localStorage.removeItem(DEMO_HISTORY_KEY);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** History used by stats: production + optional demo overlay (never merged into prod). */
+  function getHistoryForStats() {
+    const prod = read(KEYS.history, []);
+    if (!isDemoMode()) return prod;
+    const demo = read(DEMO_HISTORY_KEY, []);
+    const prodIds = new Set(prod.map((h) => h.id));
+    return prod.concat(demo.filter((h) => h && !prodIds.has(h.id)));
   }
 
   function init() {
@@ -71,7 +100,7 @@ LiftOS.Storage = (() => {
       LiftOS.Migrations.run();
     } catch (_) {}
     ensureDefaults();
-    loadDemoHistoryIfRequested();
+    enterDemoMode();
   }
 
   function exportPayload() {
@@ -81,7 +110,7 @@ LiftOS.Storage = (() => {
       schemaVersion: LiftOS.Migrations.getVersion(),
       exportedAt: new Date().toISOString(),
       plans: read(KEYS.plans, []),
-      history: read(KEYS.history, []),
+      history: read(KEYS.history, []), // production only — demo overlay never exported
       notes: read(KEYS.notes, {}),
       prefs: read(KEYS.prefs, {}),
       activeSession: read(KEYS.session, null),
@@ -217,24 +246,26 @@ LiftOS.Storage = (() => {
    * Order: validate → capture → backup → write business data → migrate →
    * integrity check → commit schemaVersion. Any failure restores capture.
    */
-  function importPayload(data, options = {}) {
+  function importPayload(data) {
     const v = validateImport(data);
     if (!v.ok) {
       return { ok: false, error: v.error, code: v.code || "VALIDATE" };
     }
 
     const original = captureCurrentState();
-    let backedUp = false;
     try {
-      snapshotBackup("pre-import");
-      backedUp = true;
+      const backupKey = snapshotBackup("pre-import");
+      if (!backupKey) throw new Error("backup failed");
     } catch (err) {
-      // backup is extra insurance; still proceed with in-memory rollback
-      console.error("LiftOS import: snapshotBackup failed", err);
+      console.error("LiftOS import aborted: backup failed", err);
+      return {
+        ok: false,
+        error: "无法创建恢复备份，已中止导入，原数据未改动。",
+        code: "BACKUP_FAILED",
+      };
     }
 
-    // optional test hook: force failure at a specific write step
-    const failAt = options.__failAt || null;
+    const failAt = LiftOS.__TEST_FAIL_AT || null;
     const shouldFail = (step) => failAt === step;
 
     try {
@@ -257,7 +288,6 @@ LiftOS.Storage = (() => {
       // Business data written. Align schema to import source, then migrate up.
       // Do NOT commit CURRENT_SCHEMA_VERSION until integrity passes.
       if (shouldFail("migrate")) throw new Error("forced fail migrate");
-      const importSchema = v.schemaVersion; // missing → CURRENT in validate; prefer explicit
       let startSchema = typeof data.schemaVersion === "number" ? data.schemaVersion : 1;
       if (startSchema > LiftOS.CURRENT_SCHEMA_VERSION) startSchema = LiftOS.CURRENT_SCHEMA_VERSION;
       localStorage.setItem(KEYS.schemaVersion, String(startSchema));
@@ -274,7 +304,7 @@ LiftOS.Storage = (() => {
 
       // Success: commit schema version last
       localStorage.setItem(KEYS.schemaVersion, String(LiftOS.CURRENT_SCHEMA_VERSION));
-      return { ok: true, backedUp, schemaVersion: LiftOS.CURRENT_SCHEMA_VERSION };
+      return { ok: true, backedUp: true, schemaVersion: LiftOS.CURRENT_SCHEMA_VERSION };
     } catch (err) {
       console.error("LiftOS import failed, rolling back", err);
       try {
@@ -327,6 +357,9 @@ LiftOS.Storage = (() => {
       write(KEYS.notes, notes);
     },
     getHistory: () => read(KEYS.history, []),
+    getHistoryForStats,
+    clearDemoOverlay,
+    isDemoMode,
     saveHistory(history) {
       write(KEYS.history, history);
     },
