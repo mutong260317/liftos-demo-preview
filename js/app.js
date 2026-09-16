@@ -24,6 +24,7 @@ LiftOS.UI = (() => {
     restTicker: null,
     workoutTicker: null,
     lastCompletedUndo: null, // { setIdx, expires }
+    historyDraft: null,
     pendingReplace: null,
   };
 
@@ -108,6 +109,7 @@ LiftOS.UI = (() => {
   /* ---------- navigation ---------- */
   function nav(name) {
     if (name === "training") return navTraining();
+    if (state.screen === "training" && name !== "training") applyWakeLock(false);
     state.screen = name;
     $all(".screen").forEach((s) => s.classList.toggle("active", s.dataset.screen === name));
     $all(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.nav === name));
@@ -124,9 +126,8 @@ LiftOS.UI = (() => {
   function navTraining() {
     state.session = S.getSession();
     if (!state.session) {
-      const homePlan = P.all()[0];
-      if (homePlan) startWorkoutFromPlan(homePlan.id);
-      else showToast("还没有训练计划");
+      // stay on home if no session — user chooses plan or free
+      showToast("请从今日卡片开始训练或自由训练");
       return;
     }
     state.screen = "training";
@@ -134,6 +135,7 @@ LiftOS.UI = (() => {
     $all(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.nav === "training"));
     $("#bottomNav").classList.add("hidden");
     startTickers();
+    applyWakeLock(true);
     renderTraining();
   }
 
@@ -194,7 +196,8 @@ LiftOS.UI = (() => {
       </div>
       <button class="btn btn-primary btn-block btn-lg" onclick="App.startWorkoutFromPlan('${todayPlan.id}')">
         ${session ? "进入今日计划训练" : "开始训练"}
-      </button>`;
+      </button>
+      ${session ? "" : `<button class="btn btn-secondary btn-block mt-2" onclick="App.startFreeWorkout()">开始自由训练</button>`}`;
 
     // week strip from history
     renderWeekStrip();
@@ -254,7 +257,12 @@ LiftOS.UI = (() => {
 
   function volumeOfHistory(h) {
     let v = 0;
-    (h.exercises || []).forEach((ex) => (ex.sets || []).forEach((s) => (v += (s.weight || 0) * (s.reps || 0))));
+    (h.exercises || []).forEach((ex) =>
+      (ex.sets || []).forEach((s) => {
+        if (!LiftOS.Stats.isWork(s)) return;
+        v += LiftOS.Stats.setVolume(s);
+      })
+    );
     return v;
   }
 
@@ -340,12 +348,13 @@ LiftOS.UI = (() => {
           .map((pe, i) => {
             const m = LiftOS.getExercise(pe.exerciseId);
             return `<div class="plan-day-item">
-              <div class="idx">${i + 1}</div>
+              <div class="idx">${i + 1}${pe.supersetGroup ? "<br/>SS" : ""}</div>
               <div class="info" style="cursor:pointer" onclick="App.openPlanExEditor('${planId}',${i})">
-                <div class="name">${esc(m?.name || pe.exerciseId)}</div>
+                <div class="name">${esc(m?.name || pe.exerciseId)}${pe.supersetGroup ? ` <span class="badge-success">超级组</span>` : ""}</div>
                 <div class="sets">${pe.workSets} × ${pe.repMin}-${pe.repMax} · 休息 ${pe.restSeconds}s · RIR ${pe.targetRirMin}-${pe.targetRirMax}</div>
                 <div class="sets" style="color:var(--accent);font-weight:600">编辑参数</div>
               </div>
+              <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();App.togglePlanSuperset('${planId}',${i})">${pe.supersetGroup ? "解SS" : "组SS"}</button>
               <button class="icon-btn" aria-label="删除动作" onclick="event.stopPropagation();App.removePlanEx('${planId}',${i})">
                 <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
               </button>
@@ -571,6 +580,26 @@ LiftOS.UI = (() => {
     if (!session) return;
     const ex = W.currentEx(session);
     if (!ex) {
+      if (!session.exercises.length) {
+        // free workout with no exercises yet
+        $("#trainingPlanLabel").textContent = session.planName || "自由训练";
+        $("#workoutTimer").textContent = fmtElapsed(Date.now() - session.startTime);
+        $("#exProgressLabel").textContent = "0 / 0 动作";
+        $("#exLoggingView").classList.add("hide");
+        $("#exCompleteView").classList.add("hide");
+        $("#setList").innerHTML = `
+          <div class="empty-state">
+            <div class="icon">➕</div>
+            <h3>自由训练</h3>
+            <p>从动作库添加第一个动作开始记录。</p>
+            <div class="empty-actions">
+              <button class="btn btn-primary" onclick="App.addExercise()">添加动作</button>
+              <button class="btn btn-ghost" onclick="App.confirmEndWorkout()">结束训练</button>
+            </div>
+          </div>`;
+        tickRest();
+        return;
+      }
       endWorkout();
       return;
     }
@@ -589,7 +618,7 @@ LiftOS.UI = (() => {
 
     if (workDone) {
       const work = W.workSetsOf(ex).filter((s) => s.completed);
-      const vol = work.reduce((a, s) => a + (s.weight || 0) * (s.reps || 0), 0);
+      const vol = work.reduce((a, s) => a + St.setVolume(s), 0);
       const lastVol = lastVolumeFor(ex.exerciseId);
       $("#doneExName").textContent = ex.name;
       $("#doneExSets").textContent = `${work.length} / ${work.length} 组完成`;
@@ -615,8 +644,8 @@ LiftOS.UI = (() => {
       $("#nextExBtn").textContent = session.exIndex >= session.exercises.length - 1 ? "结束训练" : "下一动作";
     }
 
-    $("#exName").textContent = ex.name;
-    $("#exMuscle").textContent = ex.muscle;
+    $("#exName").textContent = ex.name + (ex.supersetGroup ? " · SS" : "");
+    $("#exMuscle").textContent = ex.muscle + (ex.supersetGroup ? " · 超级组" : "");
 
     const pe = ex.planExercise;
     const best = St.bestSet(ex.exerciseId);
@@ -648,7 +677,7 @@ LiftOS.UI = (() => {
   function lastVolumeFor(exerciseId) {
     const rows = St.exerciseHistory(exerciseId);
     if (!rows.length) return 0;
-    return rows[0].sets.reduce((a, s) => a + (s.weight || 0) * (s.reps || 0), 0);
+    return rows[0].sets.reduce((a, s) => a + St.setVolume(s), 0);
   }
 
   function renderSetList() {
@@ -657,50 +686,109 @@ LiftOS.UI = (() => {
     if (!ex) return;
     const activeIdx = W.activeSetIndex(session);
     const best = St.bestSet(ex.exerciseId);
-    const lastSets = St.exerciseHistory(ex.exerciseId)[0]?.sets || [];
+    const pref = S.getPrefs().previousValueMode || "same_routine";
+    const isDur = !!LiftOS.isDurationExercise?.(ex.exerciseId);
+    const workDoneBefore = ex.sets.slice(0, activeIdx).filter((s) => LiftOS.Stats.isWork(s) && s.completed).length;
 
     $("#setList").innerHTML = ex.sets
       .map((set, i) => {
         const isActive = i === activeIdx;
         const isDone = set.completed;
         const isWarm = set.type === "warmup";
+        const typeLabel =
+          { warmup: "热身", work: "工作组", drop: "递减组", failure: "力竭", amrap: "AMRAP" }[set.type] || set.type;
         const label = isWarm ? "热身" : String(set.num);
+        const prevSet = isWarm ? null : LiftOS.Gym.previousSetForIndex(ex.exerciseId, ex.sets.slice(0, i).filter((s) => LiftOS.Stats.isWork(s)).length, pref, session);
+        const prevTxt = prevSet ? LiftOS.Gym.formatPrev(prevSet) : "—";
 
         if (isActive) {
-          const sugReps = pickSuggestReps(ex, set, lastSets, i);
+          const sugReps = pickSuggestReps(ex, set, [], i);
           const bw = LiftOS.isBodyweight(ex.exerciseId);
           const inc = incOf(ex) || 2.5;
-          const weightBlock = bw
+          const lm = set.loadMode || "external";
+
+          const typeRow = `
+            <div class="stepper-block">
+              <div class="label">组类型</div>
+              <div class="rir-row">
+                ${["warmup", "work", "drop", "failure", "amrap"]
+                  .map(
+                    (t) =>
+                      `<button class="rir-btn ${set.type === t ? "selected" : ""}" onclick="App.setSetType(${i},'${t}')">${
+                        { warmup: "热身", work: "工作组", drop: "递减", failure: "力竭", amrap: "AMRAP" }[t]
+                      }</button>`
+                  )
+                  .join("")}
+              </div>
+            </div>`;
+
+          const durationBlock = isDur
             ? `
               <div class="stepper-block">
-                <div class="label">负荷 <span class="suggest-hint">自重默认 0kg，可加附加负重</span></div>
+                <div class="label">时长（秒）</div>
                 <div class="stepper">
-                  <button class="stepper-btn fast" aria-label="减少附加负重" onclick="App.stepWeight(${i}, -${inc})">−${inc}</button>
-                  <div class="stepper-value" role="button" aria-label="编辑附加负重" onclick="App.openWeightInput(${i})">
-                    <span id="wDisplay">${set.weight == null ? 0 : set.weight}</span><span class="unit">${set.weight > 0 ? "kg" : "自重"}</span>
+                  <button class="stepper-btn" onclick="App.stepDuration(${i}, -5)">−5</button>
+                  <div class="stepper-value" role="button" onclick="App.openDurationInput(${i})">
+                    <span id="dDisplay">${set.durationSec ?? "—"}</span><span class="unit">秒</span>
                   </div>
-                  <button class="stepper-btn fast" aria-label="增加附加负重" onclick="App.stepWeight(${i}, ${inc})">+${inc}</button>
+                  <button class="stepper-btn" onclick="App.stepDuration(${i}, 5)">+5</button>
                 </div>
+                <button class="btn btn-secondary btn-sm mt-2" onclick="App.startStopwatch(${i})">⏱ 秒表</button>
+              </div>`
+            : "";
+
+          const loadBlock = isDur
+            ? ""
+            : bw || lm !== "external"
+            ? `
+              <div class="stepper-block">
+                <div class="label">负荷模式</div>
+                <div class="rir-row">
+                  ${["bodyweight", "added_weight", "assisted"]
+                    .map(
+                      (m) =>
+                        `<button class="rir-btn ${lm === m ? "selected" : ""}" onclick="App.setLoadMode(${i},'${m}')">${
+                          { bodyweight: "自重", added_weight: "加重", assisted: "辅助" }[m]
+                        }</button>`
+                    )
+                    .join("")}
+                </div>
+                ${
+                  lm === "assisted"
+                    ? `<div class="label mt-2">辅助重量 kg</div>
+                       <div class="stepper">
+                         <button class="stepper-btn fast" onclick="App.stepAssist(${i},-2.5)">−2.5</button>
+                         <div class="stepper-value"><span id="aDisplay">${set.assistanceKg ?? 0}</span><span class="unit">kg</span></div>
+                         <button class="stepper-btn fast" onclick="App.stepAssist(${i},2.5)">+2.5</button>
+                       </div>`
+                    : `
+                  <div class="stepper-block">
+                    <div class="label">${lm === "added_weight" ? "附加重量" : "重量/附加"}</div>
+                    <div class="stepper">
+                      <button class="stepper-btn fast" onclick="App.stepWeight(${i}, -${inc})">−${inc}</button>
+                      <div class="stepper-value" role="button" onclick="App.openWeightInput(${i})">
+                        <span id="wDisplay">${set.weight == null ? 0 : set.weight}</span><span class="unit">kg</span>
+                      </div>
+                      <button class="stepper-btn fast" onclick="App.stepWeight(${i}, ${inc})">+${inc}</button>
+                    </div>
+                  </div>`
+                }
               </div>`
             : `
               <div class="stepper-block">
                 <div class="label">重量</div>
                 <div class="stepper">
-                  <button class="stepper-btn fast" aria-label="减少重量" onclick="App.stepWeight(${i}, -${incOf(ex)})">−${incOf(ex)}</button>
-                  <div class="stepper-value" role="button" aria-label="编辑重量" onclick="App.openWeightInput(${i})">
+                  <button class="stepper-btn fast" onclick="App.stepWeight(${i}, -${incOf(ex)})">−${incOf(ex)}</button>
+                  <div class="stepper-value" role="button" onclick="App.openWeightInput(${i})">
                     <span id="wDisplay">${set.weight == null ? "—" : set.weight}</span><span class="unit">kg</span>
                   </div>
-                  <button class="stepper-btn fast" aria-label="增加重量" onclick="App.stepWeight(${i}, ${incOf(ex)})">+${incOf(ex)}</button>
+                  <button class="stepper-btn fast" onclick="App.stepWeight(${i}, ${incOf(ex)})">+${incOf(ex)}</button>
                 </div>
               </div>`;
-          return `
-          <div class="set-card active" data-set="${i}">
-            <div class="set-editor">
-              <div class="set-label">${isWarm ? "热身组" : `第 ${set.num} 组`}${bw ? " · 自重" : ""}</div>
-              <div class="last-best">上次最佳 ${esc(best ? (best.weight > 0 ? `${best.weight}kg × ${best.reps}` : `${best.reps} 次`) : "无")} · 目标 ${ex.planExercise.repMin}-${ex.planExercise.repMax} 次</div>
 
-              ${weightBlock}
-
+          const repsBlock = isDur
+            ? ""
+            : `
               <div class="stepper-block">
                 <div class="label">次数 ${sugReps != null ? `<span class="suggest-hint">建议 ${sugReps}（未确认）</span>` : ""}</div>
                 <div class="stepper">
@@ -710,8 +798,24 @@ LiftOS.UI = (() => {
                   </div>
                   <button class="stepper-btn" aria-label="增加次数" onclick="App.stepReps(${i}, 1)">+</button>
                 </div>
-              </div>
+              </div>`;
 
+          return `
+          <div class="set-card active" data-set="${i}">
+            <div class="set-editor">
+              <div class="set-label">${typeLabel} ${label !== typeLabel ? label : ""}</div>
+              <div class="last-best">
+                <span class="prev-tag">上次</span> ${esc(prevTxt)}
+                · 最佳 ${esc(best ? (best.weight > 0 ? best.weight + "kg × " + best.reps : best.reps + " 次") : "无")}
+              </div>
+              <div class="row mb-3" style="gap:8px">
+                <button class="btn btn-secondary btn-sm" onclick="App.copyPrevCompleted(${i})">复制上一组</button>
+                <button class="btn btn-secondary btn-sm" onclick="App.copyPriorWorkout(${i})">复制上次训练</button>
+              </div>
+              ${typeRow}
+              ${loadBlock}
+              ${repsBlock}
+              ${durationBlock}
               <div class="stepper-block">
                 <div class="label">RIR <span class="suggest-hint">可留空为未记录</span></div>
                 <div class="rir-row">
@@ -724,34 +828,34 @@ LiftOS.UI = (() => {
                     .join("")}
                 </div>
               </div>
-
+              <div class="row mb-2" style="gap:8px">
+                <button class="btn btn-secondary btn-sm" onclick="App.addSetAfter(${i})">+ 加组</button>
+                <button class="btn btn-secondary btn-sm" onclick="App.deleteSetAt(${i})">删组</button>
+              </div>
               <button class="complete-set-btn" id="completeBtn" onclick="App.completeSet(${i})">
                 ✓ 完成本组
               </button>
-              <p class="complete-hint" id="completeHint">需填写真实次数后才能完成</p>
+              <p class="complete-hint" id="completeHint">上次/建议只读，完成后才写入真实数据</p>
             </div>
           </div>`;
         }
 
-        const prevLast = !isWarm && lastSets[i - (ex.sets.findIndex((s) => s.type === "work"))];
-        const prevLabel = isWarm
-          ? "热身"
-          : best
-            ? `${best.weight}×${best.reps}`
-            : "—";
+        const doneMeta = isDur
+          ? `${set.durationSec ?? "—"}s`
+          : LiftOS.Gym.formatLoad(set);
 
         return `
         <div class="set-card ${isDone ? "done" : ""}" data-set="${i}">
           <div class="set-row-compact ${isDone ? "done-set" : ""}">
             <div class="set-num">${label}</div>
-            <div class="prev"><strong>${esc(prevLabel)}</strong></div>
-            <button class="set-num-display ${isDone ? "" : "placeholder"}" aria-label="重量 ${set.weight ?? "空"}" onclick="App.focusSet(${i})">${set.weight ?? "—"}</button>
-            <button class="set-num-display ${isDone ? "" : "placeholder"}" aria-label="次数 ${set.reps ?? "空"}" onclick="App.focusSet(${i})">${isDone ? set.reps : set.reps ?? "—"}</button>
+            <div class="prev"><strong>${esc(prevTxt)}</strong><div class="type-mini">${typeLabel}</div></div>
+            <button class="set-num-display ${isDone ? "" : "placeholder"}" onclick="App.focusSet(${i})">${isDone ? esc(doneMeta) : set.weight ?? "—"}</button>
+            <button class="set-num-display ${isDone ? "" : "placeholder"}" onclick="App.focusSet(${i})">${isDone ? set.reps ?? set.durationSec ?? "—" : set.reps ?? "—"}</button>
             <button class="complete-dot ${isDone ? "done" : ""}" aria-label="${isDone ? "撤销完成" : "完成本组"}" onclick="${isDone ? `App.requestUndo(${i})` : `App.focusSet(${i})`}">
               <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
             </button>
           </div>
-          ${isDone ? `<div class="set-done-meta">${set.weight > 0 ? set.weight + "kg" : "自重"} × ${set.reps}${set.rir != null ? ` · RIR ${set.rir}` : " · RIR 未记录"}</div>` : ""}
+          ${isDone ? `<div class="set-done-meta">${esc(doneMeta)}${set.rir != null ? ` · RIR ${set.rir}` : ""}</div>` : ""}
         </div>`;
       })
       .join("");
@@ -768,22 +872,6 @@ LiftOS.UI = (() => {
 
   function incOf(ex) {
     return LiftOS.getExercise(ex.exerciseId)?.defaultIncrement ?? 2.5;
-  }
-
-  function stepWeight(i, delta) {
-    const ex = W.currentEx(state.session);
-    const set = ex.sets[i];
-    const bw = LiftOS.isBodyweight(ex.exerciseId);
-    const base = set.weight == null ? (bw ? 0 : ex.sets.find((s) => s.weight != null)?.weight ?? 20) : set.weight;
-    set.weight = Math.max(0, Math.round((base + delta) * 10) / 10);
-    W.save(state.session);
-    const el = $("#wDisplay");
-    if (el) {
-      el.textContent = set.weight;
-      const unit = el.parentElement?.querySelector(".unit");
-      if (unit && bw) unit.textContent = set.weight > 0 ? "kg" : "自重";
-    }
-    if (navigator.vibrate) navigator.vibrate(8);
   }
 
   function stepReps(i, delta) {
@@ -827,17 +915,27 @@ LiftOS.UI = (() => {
   function completeSet(i) {
     const ex = W.currentEx(state.session);
     const set = ex.sets[i];
-    if (set.reps == null || set.reps <= 0) {
+    const isDur = !!LiftOS.isDurationExercise?.(ex.exerciseId);
+    if (isDur) {
+      if (set.durationSec == null || set.durationSec <= 0) {
+        showToast("请先填写真实时长");
+        return;
+      }
+    } else if (set.reps == null || set.reps <= 0) {
       showToast("请先填写真实次数");
       const hint = $("#completeHint");
       if (hint) hint.classList.add("warn");
       return;
     }
-    // write rir from UI if selected — already on set
     const result = W.completeSet(state.session, i, {
       weight: set.weight,
       reps: set.reps,
-      rir: set.rir, // may be null
+      rir: set.rir,
+      durationSec: set.durationSec,
+      type: set.type,
+      loadMode: set.loadMode,
+      assistanceKg: set.assistanceKg,
+      addedWeightKg: set.addedWeightKg,
     });
     if (!result.ok) {
       showToast(result.error || "无法完成");
@@ -846,14 +944,638 @@ LiftOS.UI = (() => {
     if (result.prs?.length) {
       const p = result.prs[0];
       showToast(`${p.label} · ${p.detail}`, "pr");
+    } else if (result.skippedRest) {
+      showToast(`已完成 · 本动作最后一组，无休息`, "", {
+        label: "撤销",
+        onClick: () => requestUndo(i),
+      });
     } else {
-      showToast(`已完成 ${set.weight}kg × ${set.reps}`, "", {
+      showToast(`已完成 ${LiftOS.Gym.formatLoad(set)}`, "", {
         label: "撤销",
         onClick: () => requestUndo(i),
       });
     }
     if (navigator.vibrate) navigator.vibrate(18);
     renderTraining();
+  }
+
+  function setSetType(i, type) {
+    W.setSetType(state.session, i, type);
+    renderSetList();
+  }
+
+  function setLoadMode(i, mode) {
+    const set = W.currentEx(state.session).sets[i];
+    set.loadMode = mode;
+    // clear stale fields when switching modes
+    if (mode === "bodyweight") {
+      set.weight = 0;
+      set.assistanceKg = null;
+      set.addedWeightKg = null;
+    } else if (mode === "added_weight") {
+      set.assistanceKg = null;
+      if (set.addedWeightKg == null) set.addedWeightKg = Number(set.weight) || 0;
+      set.weight = set.addedWeightKg;
+    } else if (mode === "assisted") {
+      set.addedWeightKg = null;
+      if (set.assistanceKg == null) set.assistanceKg = Number(set.weight) || 0;
+      set.weight = set.assistanceKg;
+    } else {
+      set.assistanceKg = null;
+      set.addedWeightKg = null;
+    }
+    LiftOS.Gym.normalizeSetLoad(set, W.currentEx(state.session).exerciseId);
+    W.save(state.session);
+    renderSetList();
+  }
+
+  function stepWeight(i, delta) {
+    const ex = W.currentEx(state.session);
+    const set = ex.sets[i];
+    const mode = set.loadMode || "external";
+    const inc = incOf(ex) || 2.5;
+    let base = set.weight;
+    if (base == null) base = mode === "bodyweight" ? 0 : ex.sets.find((s) => s.weight != null)?.weight ?? 20;
+    const next = Math.max(0, Math.round((Number(base) + delta) * 10) / 10);
+    set.weight = next;
+    if (mode === "added_weight") set.addedWeightKg = next;
+    if (mode === "assisted") set.assistanceKg = next;
+    if (mode === "bodyweight" && next > 0) {
+      // treat as added weight
+      set.loadMode = "added_weight";
+      set.addedWeightKg = next;
+    }
+    W.save(state.session);
+    const el = $("#wDisplay");
+    if (el) {
+      el.textContent = set.weight;
+      const unit = el.parentElement?.querySelector(".unit");
+      if (unit) unit.textContent = "kg";
+    }
+    if (navigator.vibrate) navigator.vibrate(8);
+  }
+
+  function stepAssist(i, d) {
+    const set = W.currentEx(state.session).sets[i];
+    const base = Number(set.assistanceKg) || 0;
+    set.assistanceKg = Math.max(0, Math.round((base + d) * 10) / 10);
+    set.weight = set.assistanceKg;
+    W.save(state.session);
+    const el = $("#aDisplay");
+    if (el) el.textContent = set.assistanceKg;
+  }
+
+  function stepDuration(i, d) {
+    const set = W.currentEx(state.session).sets[i];
+    set.durationSec = Math.max(0, (Number(set.durationSec) || 0) + d);
+    W.save(state.session);
+    const el = $("#dDisplay");
+    if (el) el.textContent = set.durationSec;
+  }
+
+  function openDurationInput(i) {
+    const set = W.currentEx(state.session).sets[i];
+    openOverlay(`
+      <div class="modal" onclick="event.stopPropagation()">
+        <h3>输入时长</h3>
+        <div class="num-input-wrap">
+          <input id="modalDur" type="number" inputmode="numeric" value="${set.durationSec ?? 60}" />
+          <span class="unit">秒</span>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" onclick="App.saveModalDuration(${i})">确认</button>
+          <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
+        </div>
+      </div>`);
+  }
+
+  function saveModalDuration(i) {
+    const v = parseInt($("#modalDur").value, 10);
+    if (!Number.isNaN(v) && v > 0) {
+      W.updateSetField(state.session, i, "durationSec", v);
+      renderSetList();
+    }
+    closeOverlay();
+  }
+
+  let stopwatchTimer = null;
+  let stopwatchStart = 0;
+  let stopwatchSetIdx = null;
+  function startStopwatch(i) {
+    if (stopwatchTimer) {
+      clearInterval(stopwatchTimer);
+      stopwatchTimer = null;
+      const elapsed = Math.round((Date.now() - stopwatchStart) / 1000);
+      if (elapsed > 0) {
+        W.updateSetField(state.session, i, "durationSec", elapsed);
+        showToast(`秒表已写入 ${elapsed}s`);
+      }
+      renderSetList();
+      return;
+    }
+    stopwatchSetIdx = i;
+    stopwatchStart = Date.now();
+    stopwatchTimer = setInterval(() => {
+      const s = Math.round((Date.now() - stopwatchStart) / 1000);
+      const el = $("#dDisplay");
+      if (el) el.textContent = s;
+    }, 250);
+    showToast("秒表运行中，再点一次写入");
+  }
+
+  function copyPrevCompleted(i) {
+    const r = W.copyPreviousCompletedSet(state.session, i);
+    if (!r.ok) showToast(r.error || "无上一组");
+    else {
+      showToast("已复制上一组");
+      renderSetList();
+    }
+  }
+
+  function copyPriorWorkout(i) {
+    const pref = S.getPrefs().previousValueMode || "same_routine";
+    const r = W.copyPriorWorkoutSet(state.session, i, pref);
+    if (!r.ok) showToast(r.error || "无上次记录");
+    else {
+      showToast("已复制上次训练对应组");
+      renderSetList();
+    }
+  }
+
+  function addSetAfter(i) {
+    W.addSet(state.session, i + 1, "work");
+    renderSetList();
+  }
+
+  function deleteSetAt(i) {
+    const ex = W.currentEx(state.session);
+    const set = ex.sets[i];
+    if (set.completed) {
+      openOverlay(`
+        <div class="modal" onclick="event.stopPropagation()">
+          <h3>删除已完成组？</h3>
+          <p>将重新计算容量与 PR 展示。</p>
+          <div class="modal-actions">
+            <button class="btn btn-danger" onclick="App.doDeleteCompletedSet(${i})">删除</button>
+            <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
+          </div>
+        </div>`);
+      return;
+    }
+    W.deleteSet(state.session, i);
+    renderSetList();
+  }
+
+  function doDeleteCompletedSet(i) {
+    W.deleteCompletedSet(state.session, i);
+    closeOverlay();
+    renderTraining();
+    showToast("已删除并重算");
+  }
+
+  function startFreeWorkout() {
+    if (S.getSession()) {
+      showToast("已有进行中的训练");
+      return;
+    }
+    const session = W.createFreeSession();
+    S.saveSession(session);
+    state.session = session;
+    showToast("自由训练已开始，去添加动作");
+    navTraining();
+    // open library in add mode
+    setTimeout(() => addExercise(), 200);
+  }
+
+  function ensureFreeHasExercise() {
+    const ex = W.currentEx(state.session);
+    if (!ex) {
+      showToast("请先添加动作");
+      addExercise();
+      return false;
+    }
+    return true;
+  }
+
+  function toggleSuperset() {
+    if (!state.session) return;
+    const a = W.currentEx(state.session);
+    if (a?.supersetGroup) {
+      W.unlinkSuperset(state.session);
+      showToast("已取消超级组");
+      renderTraining();
+      return;
+    }
+    const r = W.linkSuperset(state.session);
+    if (!r.ok) showToast(r.error || "无法链接");
+    else showToast("已与下一动作组成超级组");
+    renderTraining();
+  }
+
+  function togglePlanSuperset(planId, index) {
+    const plan = P.get(planId);
+    if (!plan) return;
+    if (plan.exercises[index]?.supersetGroup) {
+      P.unlinkPlanSuperset(planId, index);
+      showToast("已取消超级组");
+    } else {
+      const r = P.linkPlanSuperset(planId, index);
+      if (!r.ok) showToast(r.error || "无法链接");
+      else showToast("计划中已组成超级组");
+    }
+    openPlanDetail(planId);
+  }
+
+  function renderWeeklyReview() {
+    const el = $("#weeklyReviewCard");
+    if (!el) return;
+    const w = St.weeklyReview();
+    el.innerHTML = `
+      <div class="muscle-row"><span class="name">本周</span><span class="count">${w.sessions}次</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${Math.min(100, (w.sessions / Math.max(1, w.weeklyTarget)) * 100)}%"></div></div></div>
+      <div class="muscle-row"><span class="name">工作组</span><span class="count">${w.workSets}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div></div>
+      <div class="muscle-row"><span class="name">容量</span><span class="count">${w.volume.toLocaleString()}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div></div>
+      <div class="muscle-row"><span class="name">容量Δ</span><span class="count">${w.volumeDelta == null ? "—" : (w.volumeDelta >= 0 ? "↑" : "↓") + Math.abs(w.volumeDelta) + "%"}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${w.volumeDelta == null ? 0 : Math.min(100, Math.abs(w.volumeDelta))}%"></div></div></div>
+      <div class="muscle-row"><span class="name">PR</span><span class="count">${w.prs}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div></div>
+      ${Object.keys(w.muscleSets || {})
+        .slice(0, 8)
+        .map((k) => {
+          const n = w.muscleSets[k];
+          const label = LiftOS.MuscleLabels[k] || k;
+          const mx = Math.max(1, ...Object.values(w.muscleSets || {}));
+          return `<div class="muscle-row"><span class="name">${label}</span><span class="count">${n}组</span>
+            <div class="bar-track"><div class="bar-fill" style="width:${Math.round((n / mx) * 100)}%"></div></div></div>`;
+        })
+        .join("")}
+      <p class="text-secondary mt-2" style="font-size:12px">目标 ${w.weeklyTarget} 次 · ${w.targetMet ? "已达成" : "未达成"}</p>
+    `;
+  }
+
+  function renderTopExercises(session) {
+    const el = $("#summaryTopEx");
+    if (!el) return;
+    const fake = {
+      exercises: session.exercises
+        .filter((e) => !e.skipped)
+        .map((e) => ({
+          exerciseId: e.exerciseId,
+          name: e.name,
+          sets: e.sets.filter((s) => s.completed),
+        })),
+    };
+    const top = St.topExercises(fake, 3);
+    if (!top.length) {
+      el.innerHTML = `<p class="text-secondary" style="font-size:13px">暂无完成工作组</p>`;
+      return;
+    }
+    el.innerHTML = top
+      .map(
+        (t) => `<div class="muscle-row"><span class="name">${esc(t.name)}</span><span class="count">${t.workSets}组</span>
+          <div class="bar-track"><div class="bar-fill" style="width:${Math.min(100, t.workSets * 20)}%"></div></div></div>`
+      )
+      .join("");
+  }
+
+  function renderSummaryCompare(session) {
+    const el = $("#summaryCompare");
+    if (!el) return;
+    const m = W.summaryModel(session);
+    const fake = {
+      id: session.id,
+      planId: session.planId,
+      planName: session.planName,
+      volume: m.volume,
+      workSets: m.workSets,
+      date: LiftOS.localDateKey(),
+    };
+    const cmp = St.compareSameRoutine(fake);
+    if (!cmp) {
+      el.innerHTML = `<p class="text-secondary" style="font-size:13px">暂无同计划历史可对比</p>`;
+      return;
+    }
+    el.innerHTML = `
+      <div class="muscle-row"><span class="name">容量</span><span class="count">${cmp.volume.toLocaleString()}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${cmp.prevVolume ? Math.min(100, (cmp.volume / cmp.prevVolume) * 50) : 50}%"></div></div></div>
+      <div class="muscle-row"><span class="name">上次</span><span class="count">${cmp.prevVolume.toLocaleString()}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:50%"></div></div></div>
+      <div class="muscle-row"><span class="name">工作组</span><span class="count">${cmp.workSets} → 上次 ${cmp.prevWorkSets}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${cmp.prevWorkSets ? Math.min(100, (cmp.workSets / cmp.prevWorkSets) * 50) : 50}%"></div></div></div>
+      <p class="text-secondary mt-2" style="font-size:12px">${esc(cmp.planName)} · 上次 ${esc(cmp.prevDate)}${
+        cmp.volumeDeltaPct == null ? "" : ` · 容量 ${cmp.volumeDeltaPct >= 0 ? "↑" : "↓"}${Math.abs(cmp.volumeDeltaPct)}%`
+      }</p>
+    `;
+  }
+
+  function openWarmupCalc() {
+    const ex = W.currentEx(state.session);
+    if (!ex) return;
+    if (LiftOS.isBodyweight(ex.exerciseId) || LiftOS.isDurationExercise(ex.exerciseId)) {
+      showToast("热身计算器仅适用于外部负重动作");
+      return;
+    }
+    const target = ex.sets.find((s) => s.type === "work" && s.weight)?.weight || 100;
+    openOverlay(`
+      <div class="modal" onclick="event.stopPropagation()">
+        <h3>热身计算器</h3>
+        <div class="num-input-wrap">
+          <input id="wuTarget" type="number" value="${target}" />
+          <span class="unit">kg 目标</span>
+        </div>
+        <p class="text-secondary" style="font-size:12px">默认 40%×8 · 60%×5 · 80%×3</p>
+        <div class="modal-actions">
+          <button class="btn btn-primary" onclick="App.applyWarmupCalc()">插入热身组</button>
+          <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
+        </div>
+      </div>`);
+  }
+
+  function applyWarmupCalc() {
+    const target = parseFloat($("#wuTarget").value);
+    const ex = W.currentEx(state.session);
+    const inc = incOf(ex) || 2.5;
+    const plan = LiftOS.Gym.buildWarmupPlan(target, inc);
+    // insert warmups at front if none completed
+    const firstWork = ex.sets.findIndex((s) => s.type === "work" && !s.completed);
+    const at = firstWork >= 0 ? firstWork : 0;
+    plan
+      .slice()
+      .reverse()
+      .forEach((w) => {
+        const s = W.makeSet("warmup", 0, w.weight);
+        s.reps = w.reps;
+        s.rir = null;
+        s.loadMode = "external";
+        ex.sets.splice(at, 0, s);
+      });
+    W.renumberSets(ex);
+    W.save(state.session);
+    closeOverlay();
+    renderSetList();
+    showToast("已插入热身组（未覆盖已完成组）");
+  }
+
+  function openPlateCalc() {
+    openOverlay(`
+      <div class="modal" onclick="event.stopPropagation()">
+        <h3>杠铃片计算器</h3>
+        <div class="num-input-wrap"><input id="pcTotal" type="number" value="100" /><span class="unit">总重</span></div>
+        <div class="num-input-wrap"><input id="pcBar" type="number" value="20" /><span class="unit">杠铃</span></div>
+        <div class="modal-actions">
+          <button class="btn btn-primary" onclick="App.runPlateCalc()">计算</button>
+          <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
+        </div>
+        <p id="pcResult" class="mt-3" style="font-size:14px"></p>
+      </div>`);
+  }
+
+  function runPlateCalc() {
+    const total = parseFloat($("#pcTotal").value);
+    const bar = parseFloat($("#pcBar").value);
+    const r = LiftOS.Gym.plateLoad(total, bar);
+    const el = $("#pcResult");
+    if (!r.ok) {
+      el.textContent = r.error || "无法装片";
+      return;
+    }
+    el.innerHTML = r.exact
+      ? `每侧：${r.perSide.map((p) => p + "kg").join(" + ") || "空杆"}<br/>总重 ${r.achieved}kg`
+      : `${r.error}<br/>每侧：${r.perSide.map((p) => p + "kg").join(" + ")} → 总重 ${r.achieved}kg`;
+  }
+
+  function openHistoryDetail(entryId) {
+    const entry = S.getHistory().find((h) => h.id === entryId);
+    if (!entry) return;
+    state.editingHistoryId = entryId;
+    const rows = [];
+    (entry.exercises || []).forEach((ex, ei) => {
+      (ex.sets || []).forEach((s, si) => {
+        rows.push({ ei, si, ex, s });
+      });
+    });
+    openOverlay(`
+      <div class="sheet" onclick="event.stopPropagation()">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <h3>修正历史 · ${esc(entry.planName || entry.date)}</h3>
+          <button class="btn btn-ghost btn-sm" onclick="App.closeOverlay()">关闭</button>
+        </div>
+        <div class="sheet-body">
+          ${rows
+            .map(({ ei, si, ex, s }) => {
+              const isDur = !!LiftOS.isDurationExercise?.(ex.exerciseId);
+              return `
+            <div class="plan-day-item">
+              <div class="info">
+                <div class="name">${esc(ex.name)}</div>
+                <div class="sets">
+                  类型
+                  <select class="form-input" style="width:90px;height:36px;display:inline-block" data-h="type" data-ei="${ei}" data-si="${si}">
+                    ${["work", "warmup", "drop", "failure", "amrap"].map((t) => `<option value="${t}" ${s.type === t ? "selected" : ""}>${t}</option>`).join("")}
+                  </select>
+                  负荷
+                  <select class="form-input" style="width:110px;height:36px;display:inline-block" data-h="loadMode" data-ei="${ei}" data-si="${si}">
+                    ${["external", "bodyweight", "added_weight", "assisted"].map((m) => `<option value="${m}" ${(s.loadMode || "external") === m ? "selected" : ""}>${m}</option>`).join("")}
+                  </select>
+                </div>
+                <div class="sets mt-1">
+                  ${isDur
+                    ? `秒 <input class="form-input" style="width:64px;height:36px;display:inline-block" data-h="durationSec" data-ei="${ei}" data-si="${si}" value="${s.durationSec ?? ""}" />`
+                    : `W <input class="form-input" style="width:64px;height:36px;display:inline-block" data-h="w" data-ei="${ei}" data-si="${si}" value="${s.weight ?? ""}" />
+                       R <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="r" data-ei="${ei}" data-si="${si}" value="${s.reps ?? ""}" />
+                       RIR <input class="form-input" style="width:48px;height:36px;display:inline-block" data-h="rir" data-ei="${ei}" data-si="${si}" value="${s.rir ?? ""}" />
+                       辅助 <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="assist" data-ei="${ei}" data-si="${si}" value="${s.assistanceKg ?? ""}" />
+                       附加 <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="added" data-ei="${ei}" data-si="${si}" value="${s.addedWeightKg ?? ""}" />`}
+                </div>
+              </div>
+              <button class="btn btn-ghost btn-sm" onclick="App.confirmDeleteHistorySet(${ei},${si})">删</button>
+            </div>`;
+            })
+            .join("")}
+          <button class="btn btn-primary btn-block mt-3" onclick="App.confirmSaveHistoryCorrection()">保存修正</button>
+        </div>
+      </div>`);
+  }
+
+  /** Snapshot current history-edit form into state before any overlay replace. */
+  function collectHistoryDraftFromForm(entry) {
+    $all("[data-h]").forEach((inp) => {
+      const ei = +inp.dataset.ei;
+      const si = +inp.dataset.si;
+      const field = inp.dataset.h;
+      const raw = (inp.value ?? "").toString().trim();
+      const ex = entry.exercises[ei];
+      if (!ex || !ex.sets[si]) return;
+      const set = ex.sets[si];
+      if (field === "w") set.weight = raw === "" ? null : parseFloat(raw);
+      if (field === "r") set.reps = raw === "" ? null : parseInt(raw, 10);
+      if (field === "rir") set.rir = raw === "" ? null : parseInt(raw, 10);
+      if (field === "type") set.type = raw || "work";
+      if (field === "loadMode") set.loadMode = raw || "external";
+      if (field === "durationSec") set.durationSec = raw === "" ? null : parseInt(raw, 10);
+      if (field === "assist") set.assistanceKg = raw === "" ? null : parseFloat(raw);
+      if (field === "added") set.addedWeightKg = raw === "" ? null : parseFloat(raw);
+    });
+    entry.exercises.forEach((ex) => {
+      (ex.sets || []).forEach((s) => {
+        if (LiftOS.Gym?.normalizeSetLoad) LiftOS.Gym.normalizeSetLoad(s, ex.exerciseId);
+      });
+    });
+    return entry;
+  }
+
+  function confirmSaveHistoryCorrection() {
+    const entry = JSON.parse(JSON.stringify(S.getHistory().find((h) => h.id === state.editingHistoryId)));
+    if (!entry) return;
+    state.historyDraft = collectHistoryDraftFromForm(entry);
+    openOverlay(`
+      <div class="modal" onclick="event.stopPropagation()">
+        <h3>保存历史修正？</h3>
+        <p>将重算容量与 PR 统计，不会新增重复训练。</p>
+        <div class="modal-actions">
+          <button class="btn btn-primary" onclick="App.saveHistoryCorrection()">确认保存</button>
+          <button class="btn btn-ghost" onclick="App.reopenHistoryEditor()">返回编辑</button>
+        </div>
+      </div>`);
+  }
+
+  function reopenHistoryEditor() {
+    // Restore preserved draft so 返回编辑 / delete-cancel keeps unsaved edits
+    if (state.historyDraft) {
+      openOverlay("");
+      renderHistoryEditorFromEntry(state.historyDraft);
+      return;
+    }
+    openHistoryDetail(state.editingHistoryId);
+  }
+
+  function discardHistoryDraft() {
+    state.historyDraft = null;
+    closeOverlay();
+  }
+
+  function renderHistoryEditorFromEntry(entry) {
+    if (!entry) return;
+    state.editingHistoryId = entry.id;
+    const rows = [];
+    (entry.exercises || []).forEach((ex, ei) => {
+      (ex.sets || []).forEach((s, si) => {
+        rows.push({ ei, si, ex, s });
+      });
+    });
+    openOverlay(`
+      <div class="sheet" onclick="event.stopPropagation()">
+        <div class="sheet-handle"></div>
+        <div class="sheet-header">
+          <h3>修正历史 · ${esc(entry.planName || entry.date)}${state.historyDraft ? " · 未保存草稿" : ""}</h3>
+          <button class="btn btn-ghost btn-sm" onclick="App.discardHistoryDraft()">关闭</button>
+        </div>
+        <div class="sheet-body">
+          ${rows
+            .map(({ ei, si, ex, s }) => {
+              const isDur = !!LiftOS.isDurationExercise?.(ex.exerciseId);
+              return `
+            <div class="plan-day-item">
+              <div class="info">
+                <div class="name">${esc(ex.name)}</div>
+                <div class="sets">
+                  类型
+                  <select class="form-input" style="width:90px;height:36px;display:inline-block" data-h="type" data-ei="${ei}" data-si="${si}">
+                    ${["work", "warmup", "drop", "failure", "amrap"].map((t) => `<option value="${t}" ${s.type === t ? "selected" : ""}>${t}</option>`).join("")}
+                  </select>
+                  负荷
+                  <select class="form-input" style="width:110px;height:36px;display:inline-block" data-h="loadMode" data-ei="${ei}" data-si="${si}">
+                    ${["external", "bodyweight", "added_weight", "assisted"].map((m) => `<option value="${m}" ${(s.loadMode || "external") === m ? "selected" : ""}>${m}</option>`).join("")}
+                  </select>
+                </div>
+                <div class="sets mt-1">
+                  ${isDur
+                    ? `秒 <input class="form-input" style="width:64px;height:36px;display:inline-block" data-h="durationSec" data-ei="${ei}" data-si="${si}" value="${s.durationSec ?? ""}" />`
+                    : `W <input class="form-input" style="width:64px;height:36px;display:inline-block" data-h="w" data-ei="${ei}" data-si="${si}" value="${s.weight ?? ""}" />
+                       R <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="r" data-ei="${ei}" data-si="${si}" value="${s.reps ?? ""}" />
+                       RIR <input class="form-input" style="width:48px;height:36px;display:inline-block" data-h="rir" data-ei="${ei}" data-si="${si}" value="${s.rir ?? ""}" />
+                       辅助 <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="assist" data-ei="${ei}" data-si="${si}" value="${s.assistanceKg ?? ""}" />
+                       附加 <input class="form-input" style="width:56px;height:36px;display:inline-block" data-h="added" data-ei="${ei}" data-si="${si}" value="${s.addedWeightKg ?? ""}" />`}
+                </div>
+              </div>
+              <button class="btn btn-ghost btn-sm" onclick="App.confirmDeleteHistorySet(${ei},${si})">删</button>
+            </div>`;
+            })
+            .join("")}
+          <button class="btn btn-primary btn-block mt-3" onclick="App.confirmSaveHistoryCorrection()">保存修正</button>
+        </div>
+      </div>`);
+  }
+
+  function confirmDeleteHistorySet(ei, si) {
+    const entry = JSON.parse(JSON.stringify(S.getHistory().find((h) => h.id === state.editingHistoryId)));
+    if (!entry) return;
+    // preserve any pending form edits first
+    state.historyDraft = collectHistoryDraftFromForm(entry);
+    openOverlay(`
+      <div class="modal" onclick="event.stopPropagation()">
+        <h3>删除该历史组？</h3>
+        <p>将重算本条训练的容量与展示。</p>
+        <div class="modal-actions">
+          <button class="btn btn-danger" onclick="App.deleteHistorySet(${ei},${si})">删除</button>
+          <button class="btn btn-ghost" onclick="App.reopenHistoryEditor()">取消</button>
+        </div>
+      </div>`);
+  }
+
+  function saveHistoryCorrection() {
+    const entry = state.historyDraft
+      ? JSON.parse(JSON.stringify(state.historyDraft))
+      : JSON.parse(JSON.stringify(S.getHistory().find((h) => h.id === state.editingHistoryId)));
+    state.historyDraft = null;
+    if (!entry) return;
+    if (!W.updateHistoryEntry(entry)) {
+      showToast("保存失败");
+      return;
+    }
+    closeOverlay();
+    showToast("历史已修正并重算");
+    if (state.screen === "data") renderData();
+  }
+
+  function deleteHistorySet(ei, si) {
+    const entry = state.historyDraft
+      ? JSON.parse(JSON.stringify(state.historyDraft))
+      : JSON.parse(JSON.stringify(S.getHistory().find((h) => h.id === state.editingHistoryId)));
+    state.historyDraft = null;
+    if (!entry?.exercises?.[ei]?.sets?.[si]) return;
+    entry.exercises[ei].sets.splice(si, 1);
+    entry.exercises = entry.exercises.filter((e) => e.sets.length);
+    W.updateHistoryEntry(entry);
+    openHistoryDetail(state.editingHistoryId);
+    showToast("已删除并重算");
+  }
+
+  async function applyWakeLock(on) {
+    if (!on) {
+      await LiftOS.Gym.releaseWakeLock();
+      return;
+    }
+    const prefs = S.getPrefs();
+    if (prefs.keepAwake === false) return;
+    const r = await LiftOS.Gym.requestWakeLock();
+    if (!r.ok && r.reason !== "unsupported") {
+      // silent fallback
+    }
+  }
+
+  function toggleKeepAwake() {
+    const prefs = S.getPrefs();
+    const next = prefs.keepAwake === false;
+    S.savePrefs({ keepAwake: next });
+    const label = $("#keepAwakeLabel");
+    if (label) label.textContent = next ? "开" : "关";
+    if (!next) applyWakeLock(false);
+    else if (S.getSession() && state.screen === "training") applyWakeLock(true);
+    showToast(next ? "训练时将尝试保持亮屏" : "已关闭保持亮屏");
   }
 
   function requestUndo(i) {
@@ -1023,6 +1745,7 @@ LiftOS.UI = (() => {
   }
 
   function abandonWorkout() {
+    applyWakeLock(false);
     W.abandon();
     state.session = null;
     closeOverlay();
@@ -1032,6 +1755,7 @@ LiftOS.UI = (() => {
 
   function endWorkout() {
     closeOverlay();
+    applyWakeLock(false);
     const session = state.session || S.getSession();
     if (!session) {
       nav("home");
@@ -1055,6 +1779,8 @@ LiftOS.UI = (() => {
     $("#sumVol").textContent = m.volume.toLocaleString();
     $("#sumPr").textContent = m.prs.length;
     $("#sumRir").textContent = m.avgRir == null ? "未记录" : m.avgRir;
+    renderSummaryCompare(session);
+    renderTopExercises(session);
 
     const muscleOrder = ["chest", "front_delts", "side_delts", "triceps", "back", "quads", "biceps", "core"];
     const entries = muscleOrder.filter((k) => m.muscles[k]).map((k) => [k, m.muscles[k]]);
@@ -1088,6 +1814,7 @@ LiftOS.UI = (() => {
   }
 
   function finishSummary() {
+    applyWakeLock(false);
     const session = state.session || S.getSession();
     if (!session) {
       nav("home");
@@ -1294,6 +2021,7 @@ LiftOS.UI = (() => {
 
   /* ---------- DATA ---------- */
   function renderData() {
+    renderWeeklyReview();
     const range = state.dataRange;
     const allHistory = S.getHistory();
     const emptyBox = $("#dataEmpty");
@@ -1388,6 +2116,21 @@ LiftOS.UI = (() => {
         </div>`;
       })
       .join("");
+
+    // recent history with correction entry
+    const hist = S.getHistory().slice(0, 8);
+    const histEl = $("#dataHistoryList");
+    if (histEl) {
+      histEl.innerHTML = hist
+        .map(
+          (h) => `<div class="ex-card" onclick="App.openHistoryDetail('${h.id}')">
+            <h3>${esc(h.planName || h.date)}</h3>
+            <div class="muscles">${esc(h.date)} · ${h.workSets ?? 0} 组 · ${(h.volume || 0).toLocaleString()} kg</div>
+            <div class="equip">点击修正 →</div>
+          </div>`
+        )
+        .join("");
+    }
   }
 
   function muscleMapFromSummary(sum) {
@@ -1548,7 +2291,9 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     setTheme(prefs.theme || "dark");
     state.session = S.getSession();
     const about = $("#aboutVersion");
-    if (about) about.textContent = `v${LiftOS.APP_VERSION || "0.2.1"}`;
+    if (about) about.textContent = `v${LiftOS.APP_VERSION || "0.3.0"}`;
+    const ka = $("#keepAwakeLabel");
+    if (ka) ka.textContent = prefs.keepAwake === false ? "关" : "开";
 
     $all(".range-tab").forEach((btn) => {
       btn.addEventListener("click", () => setRange(btn.dataset.range));
@@ -1621,6 +2366,17 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     checkRemoteVersion();
 
     renderHome();
+    // wake lock re-acquire when returning to visible active workout
+    document.addEventListener("visibilitychange", () => {
+      if (
+        document.visibilityState === "visible" &&
+        state.screen === "training" &&
+        S.getSession() &&
+        S.getPrefs().keepAwake !== false
+      ) {
+        applyWakeLock(true);
+      }
+    });
     // if session exists, home already shows resume banner
   }
 
@@ -1814,6 +2570,11 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     setFeeling,
     toggleNotes,
     openWhySheet,
+    toggleSuperset,
+    togglePlanSuperset,
+    renderWeeklyReview,
+    renderSummaryCompare,
+    renderTopExercises,
     adjustRest: (d) => {
       W.adjustRest(state.session, d);
       tickRest();
@@ -1823,6 +2584,35 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
       $("#restBar").classList.remove("visible");
       renderTraining();
     },
+    startFreeWorkout,
+    copyPrevCompleted,
+    copyPriorWorkout,
+    addSetAfter,
+    deleteSetAt,
+    doDeleteCompletedSet,
+    setSetType,
+    setLoadMode,
+    stepAssist,
+    stepDuration,
+    openDurationInput,
+    saveModalDuration,
+    startStopwatch,
+    openWarmupCalc,
+    applyWarmupCalc,
+    openPlateCalc,
+    runPlateCalc,
+    openHistoryDetail,
+    saveHistoryCorrection,
+    confirmSaveHistoryCorrection,
+    reopenHistoryEditor,
+    discardHistoryDraft,
+    renderHistoryEditorFromEntry,
+    collectHistoryDraftFromForm,
+    confirmDeleteHistorySet,
+    deleteHistorySet,
+    recalculateSessionPRs: () => W.recalculateSessionPRs(state.session),
+    applyWakeLock,
+    toggleKeepAwake,
     get state() {
       return state;
     },

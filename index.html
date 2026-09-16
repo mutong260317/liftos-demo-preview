@@ -159,6 +159,16 @@
             <div class="section-title">动作分析</div>
             <div id="dataExList"></div>
           </div>
+
+          <div class="section">
+            <div class="section-title">本周回顾 <span class="link">本地数据</span></div>
+            <div class="card" id="weeklyReviewCard"></div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">训练历史 <span class="link">可修正</span></div>
+            <div id="dataHistoryList"></div>
+          </div>
           </div><!-- /dataMain -->
         </div>
       </div>
@@ -196,9 +206,15 @@
                 <div class="icon"><svg viewBox="0 0 24 24"><path d="M12 21V9M7 14l5-5 5 5"/><path d="M5 3h14"/></svg></div>
                 <span class="label">导入备份</span><span class="value">恢复 JSON</span><span class="chev">›</span>
               </button>
-              <button class="settings-item" onclick="App.showToast('LiftOS V' + (window.LiftOS?.APP_VERSION || '0.2.1'))">
+              <button class="settings-item" id="btnKeepAwake" onclick="App.toggleKeepAwake()">
+                <div class="icon"><svg viewBox="0 0 24 24"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg></div>
+                <span class="label">训练时保持亮屏</span>
+                <span class="value" id="keepAwakeLabel">开</span>
+                <span class="chev">›</span>
+              </button>
+              <button class="settings-item" onclick="App.showToast('LiftOS V' + (window.LiftOS?.APP_VERSION || '0.3.0'))">
                 <div class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg></div>
-                <span class="label">关于</span><span class="value" id="aboutVersion">v0.2.1</span><span class="chev">›</span>
+                <span class="label">关于</span><span class="value" id="aboutVersion">v0.3.0</span><span class="chev">›</span>
               </button>
             </div>
           </div>
@@ -267,6 +283,11 @@
             <button class="btn btn-secondary" onclick="App.skipExercise()">跳过动作</button>
             <button class="btn btn-secondary" onclick="App.addExercise()">添加</button>
           </div>
+          <div class="training-actions">
+            <button class="btn btn-secondary btn-sm" onclick="App.openWarmupCalc()">热身计算</button>
+            <button class="btn btn-secondary btn-sm" onclick="App.openPlateCalc()">杠铃片</button>
+            <button class="btn btn-secondary btn-sm" onclick="App.toggleSuperset()">超级组</button>
+          </div>
         </div>
 
         <div class="rest-bar" id="restBar">
@@ -275,8 +296,8 @@
             <div class="rest-time" id="restTime">01:30</div>
           </div>
           <div class="rest-actions">
-            <button class="rest-adj" aria-label="减少30秒" onclick="App.adjustRest(-30)">−30s</button>
-            <button class="rest-adj" aria-label="增加30秒" onclick="App.adjustRest(30)">+30s</button>
+            <button class="rest-adj" aria-label="减少15秒" onclick="App.adjustRest(-15)">−15s</button>
+            <button class="rest-adj" aria-label="增加15秒" onclick="App.adjustRest(15)">+15s</button>
             <button class="rest-skip" onclick="App.skipRest()">跳过</button>
           </div>
         </div>
@@ -297,6 +318,14 @@
           <div class="cell"><div class="k">平均 RIR</div><div class="v" id="sumRir">未记录</div></div>
         </div>
         <div class="content mt-4">
+          <div class="section">
+            <div class="section-title">重点动作</div>
+            <div class="card" id="summaryTopEx"></div>
+          </div>
+          <div class="section">
+            <div class="section-title">与上次对比</div>
+            <div class="card" id="summaryCompare"></div>
+          </div>
           <div class="section">
             <div class="section-title">肌群</div>
             <div class="card" id="sumMuscles"></div>
@@ -445,6 +474,7 @@
   <script src="js/progression.js"></script>
   <script src="js/plans.js"></script>
   <script src="js/workout.js"></script>
+  <script src="js/gym.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

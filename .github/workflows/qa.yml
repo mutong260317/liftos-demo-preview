@@ -24,3 +24,7 @@ jobs:
         run: node scripts/qa-review-fixes.js
       - name: Run V0.2.1 data safety suite
         run: node scripts/qa-v021-data-safety.js
+      - name: Run V0.3 gym experience suite
+        run: node scripts/qa-v03-gym-experience.js
+      - name: Run V0.3 round 5 volume suite
+        run: node scripts/qa-v03-round5-volume.js

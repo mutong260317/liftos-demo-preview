@@ -61,8 +61,21 @@ LiftOS.Exercises = [
 
 LiftOS.isBodyweight = function (exerciseId) {
   const m = LiftOS.getExercise(exerciseId);
-  return m?.equipment === "bodyweight";
+  return m?.equipment === "bodyweight" && m?.metricType !== "duration";
 };
+
+LiftOS.isDurationExercise = function (exerciseId) {
+  return LiftOS.getExercise(exerciseId)?.metricType === "duration";
+};
+
+// mark duration exercises
+["plank"].forEach((id) => {
+  const m = LiftOS.Exercises.find((e) => e.id === id);
+  if (m) m.metricType = "duration";
+});
+LiftOS.Exercises.forEach((m) => {
+  if (!m.metricType) m.metricType = "reps";
+});
 
 LiftOS.MuscleLabels = {
   chest: "胸", back: "背", shoulders: "肩", side_delts: "肩", front_delts: "前束",

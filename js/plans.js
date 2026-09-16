@@ -58,6 +58,7 @@ LiftOS.Plans = (() => {
         targetRirMin: e.targetRirMin ?? 1,
         targetRirMax: e.targetRirMax ?? 2,
         restSeconds: e.restSeconds ?? 90,
+        supersetGroup: e.supersetGroup || undefined,
         progressionRuleId: e.progressionRuleId || "double",
       }));
     }
@@ -136,5 +137,36 @@ LiftOS.Plans = (() => {
     return [...set].join(" · ") || "力量训练";
   }
 
-  return { all, get, create, update, remove, addExercise, removeExercise, resolvePlanExerciseParams, planStats, estimateMinutes, muscleLabelFromPlan };
+  function linkPlanSuperset(planId, index) {
+    const plan = get(planId);
+    if (!plan) return { ok: false, error: "no plan" };
+    const a = plan.exercises[index];
+    const b = plan.exercises[index + 1];
+    if (!a || !b) return { ok: false, error: "没有下一个动作" };
+    const gid = a.supersetGroup || b.supersetGroup || `ss_${Date.now().toString(36)}`;
+    const list = plan.exercises.map((e, i) => {
+      if (i === index || i === index + 1) return { ...e, supersetGroup: gid };
+      return { ...e };
+    });
+    update(planId, { exercises: list });
+    return { ok: true, group: gid };
+  }
+
+  function unlinkPlanSuperset(planId, index) {
+    const plan = get(planId);
+    if (!plan) return false;
+    const gid = plan.exercises[index]?.supersetGroup;
+    if (!gid) return false;
+    const list = plan.exercises.map((e) => {
+      if (e.supersetGroup === gid) {
+        const { supersetGroup, ...rest } = e;
+        return rest;
+      }
+      return e;
+    });
+    update(planId, { exercises: list });
+    return true;
+  }
+
+  return { all, get, create, update, remove, addExercise, removeExercise, resolvePlanExerciseParams, planStats, estimateMinutes, muscleLabelFromPlan, linkPlanSuperset, unlinkPlanSuperset };
 })();

@@ -136,7 +136,7 @@ async function run() {
     results.push(log("block complete without reps", /真实次数|请先/.test(toast1), toast1));
 
     // 7 fill real reps + rir and complete
-    await page.locator(".set-card.active .stepper-block").nth(1).locator(".stepper-value").click();
+    await page.locator("#rDisplay").locator("xpath=..").click();
     await page.waitForTimeout(200);
     await page.fill("#modalReps", "10");
     await page.getByRole("button", { name: "确认" }).click();
