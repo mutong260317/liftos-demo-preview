@@ -1,5 +1,5 @@
 /**
- * Live Preview smoke — 393×852 — V0.3.0
+ * Live Preview smoke — 393×852 — LiftOS V0.3.1 (run after approved release)
  */
 const { chromium } = require("playwright-core");
 const fs = require("fs");

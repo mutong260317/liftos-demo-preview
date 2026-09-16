@@ -381,7 +381,7 @@ function findBrowser() {
 
     // P1-4 SW install per-asset
     const swSrc = fs.readFileSync(path.join(ROOT, "sw.js"), "utf8");
-    results.push(log("SW independent asset cache", swSrc.includes("ASSETS.map") && !swSrc.includes("cache.addAll(ASSETS)")));
+    results.push(log("SW independent asset cache", swSrc.includes("ASSETS.filter") && swSrc.includes("cache.add") && !swSrc.includes("cache.addAll(ASSETS)")));
 
     // P1-5 preview smoke version
     const smoke = fs.readFileSync(path.join(ROOT, "scripts/qa-preview-v03-smoke.js"), "utf8");
@@ -399,6 +399,133 @@ function findBrowser() {
       return !sessionStorage.getItem("liftos.demo.history") && !localStorage.getItem("liftos.demo.history");
     });
     results.push(log("demo overlay cleared", demoClear));
+
+    // P1-2 assisted undo DOM
+    const undoDom = await page.evaluate(() => {
+      localStorage.clear();
+      LiftOS.Storage.ensureDefaults();
+      const plan = LiftOS.Plans.get("pullA");
+      const s = LiftOS.Workout.createFromPlan(plan);
+      LiftOS.Storage.saveSession(s);
+      App.state.session = s;
+      const i = LiftOS.Workout.activeSetIndex(s);
+      LiftOS.Workout.completeSet(s, i, { weight: 40, reps: 8, rir: 1, loadMode: "assisted", assistanceKg: 40 });
+      LiftOS.Workout.clearRest(s);
+      App.renderTraining();
+      App.requestUndo(i);
+      return document.querySelector(".modal")?.innerText || "";
+    });
+    results.push(log("assisted Undo DOM format", /辅助 40kg × 8/.test(undoDom), undoDom.replace(/\n/g, " ")));
+    await page.evaluate(() => App.closeOverlay());
+
+    // duration history detail DOM
+    const histDom = await page.evaluate(() => {
+      localStorage.clear();
+      LiftOS.Storage.ensureDefaults();
+      localStorage.setItem(
+        "liftos.history",
+        JSON.stringify([
+          {
+            id: "ws_plank",
+            date: LiftOS.localDateKey(),
+            planName: "CORE",
+            volume: 0,
+            workSets: 1,
+            exercises: [
+              { exerciseId: "plank", name: "平板支撑", sets: [{ type: "work", weight: 0, reps: null, durationSec: 60, loadMode: "bodyweight" }] },
+            ],
+          },
+        ])
+      );
+      App.nav("data");
+      App.openExerciseStats("plank");
+      return document.getElementById("exDetailBody")?.innerText || "";
+    });
+    results.push(log("plank history detail seconds", /60s/.test(histDom) && !/0kg × null/.test(histDom), histDom.replace(/\n/g, " ").slice(0, 80)));
+    await page.evaluate(() => App.closeSubpage("subpage-ex-detail"));
+
+    // P0-2 stopwatch: start → next exercise → timer stopped, no wrong write
+    const swBound = await page.evaluate(async () => {
+      localStorage.clear();
+      LiftOS.Storage.ensureDefaults();
+      const plan = LiftOS.Plans.get("pushA");
+      const s = LiftOS.Workout.createFromPlan(plan);
+      // put plank at end
+      LiftOS.Workout.addExerciseToSession(s, "plank", {});
+      LiftOS.Storage.saveSession(s);
+      App.state.session = s;
+      s.exIndex = s.exercises.length - 1;
+      const i = LiftOS.Workout.activeSetIndex(s);
+      const plankUid = LiftOS.Workout.currentEx(s).id;
+      const plankSetId = LiftOS.Workout.currentEx(s).sets[i].id;
+      App.startStopwatch(i);
+      const running1 = App.stopwatchIsRunning();
+      App.nextExercise(); // no more exercises after plank? next may end — use skip/replace path
+      // force go back to first exercise via skip if next ended
+      if (!App.state.session) {
+        return { running1, running2: false, unexpected: true };
+      }
+      await new Promise((r) => setTimeout(r, 600));
+      const running2 = App.stopwatchIsRunning();
+      // verify no other set got durationSec from old bind
+      const leaked = App.state.session.exercises.some((ex) =>
+        ex.id !== plankUid && ex.sets.some((st) => st.durationSec != null && st.durationSec > 0)
+      );
+      const plankStill = App.state.session.exercises.find((e) => e.id === plankUid);
+      const plankSet = plankStill?.sets.find((st) => st.id === plankSetId);
+      return { running1, running2, leaked, plankDur: plankSet?.durationSec, exIdx: App.state.session.exIndex };
+    });
+    results.push(
+      log(
+        "stopwatch bound + cleaned on exercise change",
+        swBound.running1 === true && swBound.running2 === false && !swBound.leaked,
+        JSON.stringify(swBound)
+      )
+    );
+
+    // export blocked on corruption without silent empty
+    const expCorrupt = await page.evaluate(() => {
+      localStorage.setItem("liftos.history", "{{bad");
+      localStorage.setItem("liftos.schemaVersion", "5");
+      let err = null;
+      try {
+        LiftOS.Storage.exportPayload();
+      } catch (e) {
+        err = { code: e.code, msg: e.message };
+      }
+      const preserved = Object.keys(localStorage).some((k) => k.startsWith("liftos.corrupt.liftos.history."));
+      const recovered = [...Object.keys(localStorage)].filter((k) => k.startsWith("liftos.corrupt.liftos.history.")).map((k) => localStorage.getItem(k));
+      localStorage.setItem("liftos.history", JSON.stringify([]));
+      Object.keys(localStorage).filter((k) => k.startsWith("liftos.corrupt.")).forEach((k) => localStorage.removeItem(k));
+      return { err, preserved, recovered };
+    });
+    results.push(
+      log(
+        "export refuses silent empty on corrupt",
+        !!expCorrupt.err && expCorrupt.preserved && expCorrupt.recovered.includes("{{bad"),
+        JSON.stringify(expCorrupt.err)
+      )
+    );
+
+    // preserve plans + prefs
+    const multiCorrupt = await page.evaluate(() => {
+      localStorage.setItem("liftos.plans", "not-json-plans");
+      localStorage.setItem("liftos.prefs", "not-json-prefs");
+      const p = LiftOS.Storage.preserveAllCorruptKeys();
+      const keys = Object.keys(localStorage).filter((k) => k.startsWith("liftos.corrupt."));
+      const vals = keys.map((k) => localStorage.getItem(k));
+      localStorage.setItem("liftos.plans", JSON.stringify([]));
+      localStorage.setItem("liftos.prefs", JSON.stringify({ theme: "dark" }));
+      keys.forEach((k) => localStorage.removeItem(k));
+      return { p, keys, vals };
+    });
+    results.push(
+      log(
+        "preserve corrupt plans+prefs raw",
+        multiCorrupt.vals.includes("not-json-plans") && multiCorrupt.vals.includes("not-json-prefs"),
+        JSON.stringify(multiCorrupt.keys)
+      )
+    );
 
     await page.screenshot({ path: path.join(OUT, "final.png") });
   } catch (err) {

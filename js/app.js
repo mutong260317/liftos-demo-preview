@@ -109,7 +109,10 @@ LiftOS.UI = (() => {
   /* ---------- navigation ---------- */
   function nav(name) {
     if (name === "training") return navTraining();
-    if (state.screen === "training" && name !== "training") applyWakeLock(false);
+    if (state.screen === "training" && name !== "training") {
+      stopStopwatch(true);
+      applyWakeLock(false);
+    }
     state.screen = name;
     $all(".screen").forEach((s) => s.classList.toggle("active", s.dataset.screen === name));
     $all(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.nav === name));
@@ -1064,31 +1067,57 @@ LiftOS.UI = (() => {
 
   let stopwatchTimer = null;
   let stopwatchStart = 0;
-  let stopwatchSetIdx = null;
+  let stopwatchBind = null; // { sessionId, exerciseId, exerciseUid, setId }
+
+  function stopwatchBindMatches() {
+    if (!stopwatchBind || !state.session) return false;
+    const ex = W.currentEx(state.session);
+    if (!ex) return false;
+    return (
+      stopwatchBind.sessionId === state.session.id &&
+      stopwatchBind.exerciseUid === ex.id &&
+      stopwatchBind.exerciseId === ex.exerciseId
+    );
+  }
+
   function stopStopwatch(cancelOnly) {
     if (!stopwatchTimer) return;
     clearInterval(stopwatchTimer);
     stopwatchTimer = null;
-    if (!cancelOnly && stopwatchStart) {
+    if (!cancelOnly && stopwatchStart && stopwatchBind && state.session) {
       const elapsed = Math.round((Date.now() - stopwatchStart) / 1000);
-      if (elapsed > 0 && state.session && stopwatchSetIdx != null) {
-        W.updateSetField(state.session, stopwatchSetIdx, "durationSec", elapsed);
+      // only write if still bound to same exercise object
+      if (stopwatchBindMatches() && elapsed > 0) {
+        const ex = W.currentEx(state.session);
+        const idx = ex.sets.findIndex((s) => s.id === stopwatchBind.setId);
+        if (idx >= 0) W.updateSetField(state.session, idx, "durationSec", elapsed);
       }
     }
     stopwatchStart = 0;
-    stopwatchSetIdx = null;
+    stopwatchBind = null;
   }
 
   function startStopwatch(i) {
     if (stopwatchTimer) {
       stopStopwatch(false);
-      showToast("秒表已停止并写入");
+      showToast("秒表已停止");
       renderSetList();
       return;
     }
-    stopwatchSetIdx = i;
+    const ex = W.currentEx(state.session);
+    if (!ex || !ex.sets[i]) return;
+    stopwatchBind = {
+      sessionId: state.session.id,
+      exerciseId: ex.exerciseId,
+      exerciseUid: ex.id,
+      setId: ex.sets[i].id,
+    };
     stopwatchStart = Date.now();
     stopwatchTimer = setInterval(() => {
+      if (!stopwatchBindMatches()) {
+        stopStopwatch(true);
+        return;
+      }
       const s = Math.round((Date.now() - stopwatchStart) / 1000);
       const el = $("#dDisplay");
       if (el) el.textContent = s;
@@ -1140,6 +1169,7 @@ LiftOS.UI = (() => {
   }
 
   function doDeleteCompletedSet(i) {
+    stopStopwatch(true);
     W.deleteCompletedSet(state.session, i);
     closeOverlay();
     renderTraining();
@@ -1616,6 +1646,7 @@ LiftOS.UI = (() => {
   }
 
   function nextExercise() {
+    stopStopwatch(true);
     const ok = W.nextExercise(state.session);
     if (!ok) {
       endWorkout();
@@ -1625,6 +1656,7 @@ LiftOS.UI = (() => {
   }
 
   function skipExercise() {
+    stopStopwatch(true);
     W.skipExercise(state.session);
     renderTraining();
   }
@@ -1687,6 +1719,7 @@ LiftOS.UI = (() => {
 
   function applyReplace(mode) {
     if (!state.pendingReplace) return;
+    stopStopwatch(true);
     W.replaceExercise(state.session, state.pendingReplace.newId, mode);
     state.pendingReplace = null;
     closeOverlay();
@@ -2311,7 +2344,15 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     try {
       const corrupt = S.detectCorruption ? S.detectCorruption() : [];
       if (corrupt.length) {
-        setTimeout(() => showToast("部分本地数据损坏，已备份原始内容，请勿连续覆盖", ""), 400);
+        const preserved = S.preserveAllCorruptKeys ? S.preserveAllCorruptKeys() : [];
+        const allPreserved = corrupt.every((k) => S.hasCorruptPreserved?.(k));
+        setTimeout(() => {
+          if (allPreserved) {
+            showToast("部分本地数据损坏，已保存原始恢复副本", "");
+          } else {
+            showToast("部分本地数据损坏且无法自动备份，请谨慎操作", "");
+          }
+        }, 400);
       }
     } catch (_) {}
     const ka = $("#keepAwakeLabel");
@@ -2379,9 +2420,13 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
         .catch(() => {});
       let refreshing = false;
       navigator.serviceWorker.addEventListener("controllerchange", () => {
+        // Never auto-reload during an active workout
+        if (S.getSession()) {
+          showToast("新版本已就绪，训练结束后可更新");
+          return;
+        }
         if (refreshing) return;
         refreshing = true;
-        // session already saved on every mutation
         location.reload();
       });
     }
@@ -2466,8 +2511,12 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
 
   /* ---------- EXPORT / IMPORT ---------- */
   function exportData() {
-    const payload = S.downloadExport();
-    showToast(`已导出 ${payload.history.length} 条历史`);
+    try {
+      const payload = S.downloadExport();
+      showToast(`已导出 ${payload.history.length} 条历史`);
+    } catch (err) {
+      showToast(err?.message || "导出失败");
+    }
   }
 
   function openImportPicker() {
@@ -2620,6 +2669,7 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     saveModalDuration,
     stopStopwatch,
     startStopwatch,
+    stopwatchIsRunning: () => !!stopwatchTimer,
     openWarmupCalc,
     applyWarmupCalc,
     openPlateCalc,

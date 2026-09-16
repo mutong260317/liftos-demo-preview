@@ -28,6 +28,8 @@ jobs:
         run: node scripts/qa-v03-gym-experience.js
       - name: Run V0.3.1 stabilization suite
         run: node scripts/qa-v031-stabilization.js
+      - name: Run SW HTTP offline smoke
+        run: node scripts/qa-v031-sw-http.js
       - name: Syntax check JS
         run: |
           node --check js/migrations.js

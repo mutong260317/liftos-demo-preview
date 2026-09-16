@@ -33,11 +33,36 @@ LiftOS.Storage = (() => {
     return bad;
   }
 
+  /**
+   * Immediately preserve exact raw bytes of corrupt business keys.
+   * Returns list of keys successfully preserved.
+   */
+  function preserveAllCorruptKeys() {
+    const preserved = [];
+    detectCorruption().forEach((key) => {
+      if (preserveCorruptValue(key)) preserved.push(key);
+    });
+    return preserved;
+  }
+
+  function hasCorruptPreserved(key) {
+    try {
+      return Object.keys(localStorage).some((k) => k.startsWith(`liftos.corrupt.${key}.`));
+    } catch {
+      return false;
+    }
+  }
+
   /** Preserve raw corrupt value before any destructive overwrite. */
   function preserveCorruptValue(key) {
     try {
       const raw = localStorage.getItem(key);
       if (raw == null) return false;
+      // avoid duplicate identical recovery blobs
+      const existing = Object.keys(localStorage).filter((k) => k.startsWith(`liftos.corrupt.${key}.`));
+      for (const k of existing) {
+        if (localStorage.getItem(k) === raw) return true;
+      }
       localStorage.setItem(corruptRecoveryKey(key), raw);
       return true;
     } catch {
@@ -51,13 +76,11 @@ LiftOS.Storage = (() => {
       if (raw == null) return fallback;
       return JSON.parse(raw);
     } catch {
-      // Do not treat corruption as empty — leave raw intact; report via corruption check
       return fallback;
     }
   }
 
   function write(key, value) {
-    // Never silently destroy corrupt business payloads
     if (CORRUPT_KEYS.includes(key)) {
       const raw = localStorage.getItem(key);
       if (raw != null) {
@@ -65,11 +88,7 @@ LiftOS.Storage = (() => {
           JSON.parse(raw);
         } catch {
           const preserved = preserveCorruptValue(key);
-          if (!preserved) throw new Error("corrupt key not preserved");
-          // after preserve, still refuse to overwrite until caller clears corruption flag
-          LiftOS.Storage.corruption = LiftOS.Storage.corruption || {};
-          LiftOS.Storage.corruption[key] = true;
-          // allow write only after preserve (raw saved)
+          if (!preserved) throw new Error("corrupt key not preserved before write");
         }
       }
     }
@@ -158,6 +177,10 @@ LiftOS.Storage = (() => {
   }
 
   function init() {
+    // Preserve corrupt raw bytes immediately before any other reads/writes
+    try {
+      preserveAllCorruptKeys();
+    } catch (_) {}
     try {
       LiftOS.Migrations.run();
     } catch (_) {}
@@ -167,6 +190,20 @@ LiftOS.Storage = (() => {
   }
 
   function exportPayload() {
+    // If any business key is corrupt and not yet preserved, refuse silent empty export
+    const corrupt = detectCorruption();
+    if (corrupt.length) {
+      const okPreserve = preserveAllCorruptKeys();
+      if (okPreserve.length < corrupt.length) {
+        const err = new Error("本地数据损坏，无法安全导出");
+        err.code = "CORRUPT_EXPORT";
+        throw err;
+      }
+      const err2 = new Error("部分数据损坏，已保存恢复副本；请勿把本次导出当作完整备份");
+      err2.code = "CORRUPT_EXPORT_PRESERVED";
+      err2.corrupt = corrupt;
+      throw err2;
+    }
     return {
       exportVersion: 1,
       appVersion: LiftOS.APP_VERSION,
@@ -433,6 +470,8 @@ LiftOS.Storage = (() => {
     isDemoMode,
     detectCorruption,
     preserveCorruptValue,
+    preserveAllCorruptKeys,
+    hasCorruptPreserved,
     saveHistory(history) {
       write(KEYS.history, history);
     },
