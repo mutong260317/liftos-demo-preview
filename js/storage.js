@@ -13,6 +13,63 @@ LiftOS.Storage = (() => {
     schemaVersion: "liftos.schemaVersion",
   };
 
+  const CORRUPT_KEYS = ["liftos.history", "liftos.plans", "liftos.notes", "liftos.prefs", "liftos.session"];
+
+  function corruptRecoveryKey(key) {
+    return `liftos.corrupt.${key}.${Date.now()}`;
+  }
+
+  function detectCorruption() {
+    const bad = [];
+    CORRUPT_KEYS.forEach((key) => {
+      const raw = localStorage.getItem(key);
+      if (raw == null) return;
+      try {
+        JSON.parse(raw);
+      } catch {
+        bad.push(key);
+      }
+    });
+    return bad;
+  }
+
+  /**
+   * Immediately preserve exact raw bytes of corrupt business keys.
+   * Returns list of keys successfully preserved.
+   */
+  function preserveAllCorruptKeys() {
+    const preserved = [];
+    detectCorruption().forEach((key) => {
+      if (preserveCorruptValue(key)) preserved.push(key);
+    });
+    return preserved;
+  }
+
+  function hasCorruptPreserved(key) {
+    try {
+      return Object.keys(localStorage).some((k) => k.startsWith(`liftos.corrupt.${key}.`));
+    } catch {
+      return false;
+    }
+  }
+
+  /** Preserve raw corrupt value before any destructive overwrite. */
+  function preserveCorruptValue(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw == null) return false;
+      // avoid duplicate identical recovery blobs
+      const existing = Object.keys(localStorage).filter((k) => k.startsWith(`liftos.corrupt.${key}.`));
+      for (const k of existing) {
+        if (localStorage.getItem(k) === raw) return true;
+      }
+      localStorage.setItem(corruptRecoveryKey(key), raw);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function read(key, fallback) {
     try {
       const raw = localStorage.getItem(key);
@@ -24,6 +81,17 @@ LiftOS.Storage = (() => {
   }
 
   function write(key, value) {
+    if (CORRUPT_KEYS.includes(key)) {
+      const raw = localStorage.getItem(key);
+      if (raw != null) {
+        try {
+          JSON.parse(raw);
+        } catch {
+          const preserved = preserveCorruptValue(key);
+          if (!preserved) throw new Error("corrupt key not preserved before write");
+        }
+      }
+    }
     localStorage.setItem(key, JSON.stringify(value));
   }
 
@@ -43,45 +111,106 @@ LiftOS.Storage = (() => {
         theme: "dark",
         restDefault: 90,
         weeklyTarget: 5,
-        bodyWeight: 90,
-        goal: "综合力量 + 减脂",
-        name: "牧童",
+        bodyWeight: null,
+        goal: "综合力量",
+        name: "训练者",
+        previousValueMode: "same_routine",
+        keepAwake: true,
       });
     }
   }
 
-  /** Dev/demo only: ?demo=1 loads SeedHistory for UI testing. Never auto. */
-  function loadDemoHistoryIfRequested() {
+  /**
+   * Demo isolation: SeedHistory overlay in sessionStorage only.
+   * Never write demo ids into production localStorage history.
+   */
+  const DEMO_HISTORY_KEY = "liftos.demo.history";
+
+  function isDemoMode() {
     try {
-      const q = new URLSearchParams(location.search);
-      if (q.get("demo") !== "1") return false;
-      const hist = read(KEYS.history, []);
+      return new URLSearchParams(location.search).get("demo") === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function enterDemoMode() {
+    try {
+      if (!isDemoMode()) return false;
       const seed = LiftOS.SeedHistory || [];
-      const seedIds = new Set(seed.map((x) => x.id));
-      const merged = hist.filter((h) => !seedIds.has(h.id)).concat(seed);
-      write(KEYS.history, merged);
+      sessionStorage.setItem(DEMO_HISTORY_KEY, JSON.stringify(seed));
       return true;
     } catch {
       return false;
     }
   }
 
+  function clearDemoOverlay() {
+    try {
+      sessionStorage.removeItem(DEMO_HISTORY_KEY);
+      localStorage.removeItem(DEMO_HISTORY_KEY);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function getDemoHistory() {
+    try {
+      if (!isDemoMode()) return [];
+      const raw = sessionStorage.getItem(DEMO_HISTORY_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** History used by stats: production + optional demo overlay (never merged into prod). */
+  function getHistoryForStats() {
+    const prod = read(KEYS.history, []);
+    if (!isDemoMode()) return prod;
+    const demo = getDemoHistory();
+    const prodIds = new Set(prod.map((h) => h.id));
+    return prod.concat(demo.filter((h) => h && !prodIds.has(h.id)));
+  }
+
   function init() {
+    // Preserve corrupt raw bytes immediately before any other reads/writes
+    try {
+      preserveAllCorruptKeys();
+    } catch (_) {}
     try {
       LiftOS.Migrations.run();
     } catch (_) {}
     ensureDefaults();
-    loadDemoHistoryIfRequested();
+    if (!isDemoMode()) clearDemoOverlay();
+    enterDemoMode();
   }
 
   function exportPayload() {
+    // If any business key is corrupt and not yet preserved, refuse silent empty export
+    const corrupt = detectCorruption();
+    if (corrupt.length) {
+      const okPreserve = preserveAllCorruptKeys();
+      if (okPreserve.length < corrupt.length) {
+        const err = new Error("本地数据损坏，无法安全导出");
+        err.code = "CORRUPT_EXPORT";
+        throw err;
+      }
+      const err2 = new Error("部分数据损坏，已保存恢复副本；请勿把本次导出当作完整备份");
+      err2.code = "CORRUPT_EXPORT_PRESERVED";
+      err2.corrupt = corrupt;
+      throw err2;
+    }
     return {
       exportVersion: 1,
       appVersion: LiftOS.APP_VERSION,
       schemaVersion: LiftOS.Migrations.getVersion(),
       exportedAt: new Date().toISOString(),
       plans: read(KEYS.plans, []),
-      history: read(KEYS.history, []),
+      history: read(KEYS.history, []), // production only — demo overlay never exported
       notes: read(KEYS.notes, {}),
       prefs: read(KEYS.prefs, {}),
       activeSession: read(KEYS.session, null),
@@ -131,10 +260,10 @@ LiftOS.Storage = (() => {
       };
     }
 
-    // schemaVersion: missing → treat as legacy (pre-schema); reject future
+    // schemaVersion: finite integer, >=0, <= CURRENT
     let schemaVersion = LiftOS.CURRENT_SCHEMA_VERSION;
     if (data.schemaVersion != null) {
-      if (typeof data.schemaVersion !== "number" || !Number.isFinite(data.schemaVersion)) {
+      if (typeof data.schemaVersion !== "number" || !Number.isFinite(data.schemaVersion) || !Number.isInteger(data.schemaVersion)) {
         return { ok: false, error: "schemaVersion 无效", code: "INVALID_SCHEMA" };
       }
       if (data.schemaVersion > LiftOS.CURRENT_SCHEMA_VERSION) {
@@ -154,6 +283,14 @@ LiftOS.Storage = (() => {
     if (!Array.isArray(data.history)) return { ok: false, error: "history 必须是数组" };
     if (data.notes != null && (typeof data.notes !== "object" || Array.isArray(data.notes))) {
       return { ok: false, error: "notes 结构无效" };
+    }
+    if (data.prefs != null && (typeof data.prefs !== "object" || Array.isArray(data.prefs))) {
+      return { ok: false, error: "prefs 结构无效", code: "INVALID_PREFS" };
+    }
+    if (data.activeSession !== undefined && data.activeSession !== null) {
+      if (typeof data.activeSession !== "object" || Array.isArray(data.activeSession)) {
+        return { ok: false, error: "activeSession 结构无效", code: "INVALID_SESSION" };
+      }
     }
     if (data.history.some((h) => !h || typeof h !== "object" || !h.id)) {
       return { ok: false, error: "history 条目缺少 id" };
@@ -217,24 +354,26 @@ LiftOS.Storage = (() => {
    * Order: validate → capture → backup → write business data → migrate →
    * integrity check → commit schemaVersion. Any failure restores capture.
    */
-  function importPayload(data, options = {}) {
+  function importPayload(data) {
     const v = validateImport(data);
     if (!v.ok) {
       return { ok: false, error: v.error, code: v.code || "VALIDATE" };
     }
 
     const original = captureCurrentState();
-    let backedUp = false;
     try {
-      snapshotBackup("pre-import");
-      backedUp = true;
+      const backupKey = snapshotBackup("pre-import");
+      if (!backupKey) throw new Error("backup failed");
     } catch (err) {
-      // backup is extra insurance; still proceed with in-memory rollback
-      console.error("LiftOS import: snapshotBackup failed", err);
+      console.error("LiftOS import aborted: backup failed", err);
+      return {
+        ok: false,
+        error: "无法创建恢复备份，已中止导入，原数据未改动。",
+        code: "BACKUP_FAILED",
+      };
     }
 
-    // optional test hook: force failure at a specific write step
-    const failAt = options.__failAt || null;
+    const failAt = LiftOS.__TEST_FAIL_AT || null;
     const shouldFail = (step) => failAt === step;
 
     try {
@@ -257,7 +396,6 @@ LiftOS.Storage = (() => {
       // Business data written. Align schema to import source, then migrate up.
       // Do NOT commit CURRENT_SCHEMA_VERSION until integrity passes.
       if (shouldFail("migrate")) throw new Error("forced fail migrate");
-      const importSchema = v.schemaVersion; // missing → CURRENT in validate; prefer explicit
       let startSchema = typeof data.schemaVersion === "number" ? data.schemaVersion : 1;
       if (startSchema > LiftOS.CURRENT_SCHEMA_VERSION) startSchema = LiftOS.CURRENT_SCHEMA_VERSION;
       localStorage.setItem(KEYS.schemaVersion, String(startSchema));
@@ -274,7 +412,7 @@ LiftOS.Storage = (() => {
 
       // Success: commit schema version last
       localStorage.setItem(KEYS.schemaVersion, String(LiftOS.CURRENT_SCHEMA_VERSION));
-      return { ok: true, backedUp, schemaVersion: LiftOS.CURRENT_SCHEMA_VERSION };
+      return { ok: true, backedUp: true, schemaVersion: LiftOS.CURRENT_SCHEMA_VERSION };
     } catch (err) {
       console.error("LiftOS import failed, rolling back", err);
       try {
@@ -327,6 +465,13 @@ LiftOS.Storage = (() => {
       write(KEYS.notes, notes);
     },
     getHistory: () => read(KEYS.history, []),
+    getHistoryForStats,
+    clearDemoOverlay,
+    isDemoMode,
+    detectCorruption,
+    preserveCorruptValue,
+    preserveAllCorruptKeys,
+    hasCorruptPreserved,
     saveHistory(history) {
       write(KEYS.history, history);
     },

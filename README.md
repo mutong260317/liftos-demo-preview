@@ -1,61 +1,55 @@
-# LiftOS / 训练OS — V0.3 Gym Experience
+# LiftOS / 训练OS — V0.3.1
 
-Mobile-first 力量训练 Logger。在 V0.2.1 真实数据安全基础上，升级为更快的健身房记录体验。
+Mobile-first 力量训练 Logger（本地优先）。在 V0.3 稳定基线上完成 Stabilization Audit。
 
-## 原则
+## 当前功能
+- 计划训练 / 自由训练 / 组记录（重量·次数·RIR·类型）
+- Previous / Suggested / Actual 分离；复制上一组 / 上次训练
+- Assisted / Bodyweight / Added Weight / Duration 语义
+- Superset A1→B1→休息→A2→B2；计划持久化
+- Rest Timer、热身计算器、杠铃片计算器、Wake Lock
+- 历史修正、Export/Import（原子回滚）、PWA
 
-1. **不要打断训练**
-2. **展示值必须区分**：上次表现 / 建议 / 当前实际输入
-3. **数据真实性**：不自动把建议写成真实记录
+## 架构
+```
+index.html
+css/          # tokens / base / components / training / screens
+js/
+  migrations.js  data.js  storage.js  stats.js
+  progression.js plans.js workout.js gym.js app.js
+```
+纯静态，无构建。数据在 `localStorage`（schema v5）。
 
-## 技术栈
+## 本地数据 / 备份
+- 导出：我的 → 导出数据（JSON）
+- 导入：校验 exportVersion/schema → 自动 backup → 原子恢复
+- Demo：仅 `?demo=1`，写入 `liftos.demo.history`，不污染生产键
 
-- Vanilla JS（模块拆分，无构建）
-- localStorage 持久化 + schema migration
-- PWA（manifest + Service Worker）
-- Playwright QA
+## PWA
+- `manifest.json` + `sw.js`（cache `liftos-v0.3.1`）
+- 训练中不自动 reload
 
 ## 本地运行
-
 ```bash
-# 直接打开
 index.html
-
 # 或
 npx serve .
 ```
+建议视口 393×852。
 
-建议视口 **393 × 852**。
-
-## 项目结构
-
-```
-.
-├── index.html
-├── css/
-├── js/
-│   ├── migrations.js
-│   ├── data.js
-│   ├── storage.js
-│   ├── stats.js
-│   ├── progression.js
-│   ├── plans.js
-│   ├── workout.js
-│   ├── gym.js          # V0.3 helpers: load mode, duration, wake lock
-│   └── app.js
-├── docs/V0.3_GYM_EXPERIENCE.md
-├── scripts/qa-v03-gym-experience.js
-├── version.json
-└── sw.js
-```
-
-## QA
-
+## 测试
 ```bash
 node scripts/qa-v02.js
 node scripts/qa-review-fixes.js
 node scripts/qa-v021-data-safety.js
 node scripts/qa-v03-gym-experience.js
+node scripts/qa-v031-stabilization.js
 ```
 
-Demo 历史数据仅 `?demo=1` 时加载。
+## 已知限制
+- 无账号/云同步（V0.4 方向）
+- 本地多设备不同步
+- iOS PWA Wake Lock / 后台限制因平台而异
+
+## 开发协作
+见根目录 `AGENTS.md` 与 PR Review 流程。

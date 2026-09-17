@@ -98,7 +98,9 @@ LiftOS.Stats = (() => {
 
   /** Aggregate history + optional live session for an exercise. */
   function exerciseHistory(exerciseId, extraSessions = [], historyOverride = null) {
-    const history = historyOverride || LiftOS.Storage.getHistory();
+    const history =
+      historyOverride ||
+      (LiftOS.Storage.getHistoryForStats ? LiftOS.Storage.getHistoryForStats() : LiftOS.Storage.getHistory());
     const rows = [];
     history.forEach((h) => {
       (h.exercises || []).forEach((ex) => {
@@ -270,7 +272,10 @@ LiftOS.Stats = (() => {
   }
 
   function historyIn(range) {
-    return LiftOS.Storage.getHistory().filter((h) => inRange(h.date, range));
+    const all = LiftOS.Storage.getHistoryForStats
+      ? LiftOS.Storage.getHistoryForStats()
+      : LiftOS.Storage.getHistory();
+    return all.filter((h) => inRange(h.date, range));
   }
 
   function summarizeHistory(range = "30d") {
@@ -310,7 +315,7 @@ LiftOS.Stats = (() => {
         });
       });
       if (h.prs) prs += h.prs;
-      else prs += countSeedPRs(h);
+      // Never guess PRs from weights — only real recorded PR counts
     });
 
     return {
@@ -333,18 +338,6 @@ LiftOS.Stats = (() => {
   function estimateMinutes(h) {
     const sets = (h.exercises || []).reduce((a, ex) => a + (ex.sets || []).length, 0);
     return Math.max(20, Math.round(sets * 2.5));
-  }
-
-  function countSeedPRs(h) {
-    // rough: sessions that contain hack_squat at 105+ or bench 80 count as pr-bearing seed days
-    let n = 0;
-    (h.exercises || []).forEach((ex) => {
-      (ex.sets || []).forEach((s) => {
-        if (ex.exerciseId === "hack_squat" && s.weight >= 105) n += 1;
-        if (ex.exerciseId === "bench" && s.weight >= 80) n += 1;
-      });
-    });
-    return Math.min(n, 2);
   }
 
   function weeklyMuscleSets(range = "7d") {
@@ -410,7 +403,9 @@ LiftOS.Stats = (() => {
     const prevMonday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() - 7);
     const prevEnd = LiftOS.localDateKey(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() - 1));
 
-    const hist = LiftOS.Storage.getHistory();
+    const hist = LiftOS.Storage.getHistoryForStats
+      ? LiftOS.Storage.getHistoryForStats()
+      : LiftOS.Storage.getHistory();
     const thisWeek = hist.filter((h) => h.date >= start && h.date <= end);
     const prevWeek = hist.filter((h) => h.date >= LiftOS.localDateKey(prevMonday) && h.date <= prevEnd);
 

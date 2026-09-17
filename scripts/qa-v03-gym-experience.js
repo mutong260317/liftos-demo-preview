@@ -41,7 +41,7 @@ async function run() {
     await page.goto(DEMO, { waitUntil: "load" });
     await page.waitForTimeout(400);
 
-    results.push(log("APP 0.3.0", (await page.evaluate(() => LiftOS.APP_VERSION)) === "0.3.0"));
+    results.push(log("APP 0.3.1", (await page.evaluate(() => LiftOS.APP_VERSION)) === "0.3.1"));
     results.push(log("schema 5", (await page.evaluate(() => LiftOS.Migrations.getVersion())) === 5));
 
     // start PUSH A via API for control

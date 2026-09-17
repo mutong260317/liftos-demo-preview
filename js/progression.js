@@ -16,6 +16,15 @@ LiftOS.Progression = (() => {
    */
   function getProgressionSuggestion({ exerciseId, repMin, repMax, historyRows }) {
     const master = LiftOS.getExercise(exerciseId);
+    // Duration exercises: no weight progression
+    if (master?.metricType === "duration") {
+      return {
+        action: "hold",
+        suggestedWeight: 0,
+        reason: "时长类动作不按重量进阶，按秒数/稳定性提升。",
+        confidence: 0.5,
+      };
+    }
     const bw = isBW(master);
     const inc = master?.defaultIncrement ?? (bw ? 0 : 2.5);
     const rows = (historyRows || S().exerciseHistory(exerciseId)).filter((r) => r.sets?.length);

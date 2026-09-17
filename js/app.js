@@ -109,7 +109,10 @@ LiftOS.UI = (() => {
   /* ---------- navigation ---------- */
   function nav(name) {
     if (name === "training") return navTraining();
-    if (state.screen === "training" && name !== "training") applyWakeLock(false);
+    if (state.screen === "training" && name !== "training") {
+      stopStopwatch(true);
+      applyWakeLock(false);
+    }
     state.screen = name;
     $all(".screen").forEach((s) => s.classList.toggle("active", s.dataset.screen === name));
     $all(".nav-item").forEach((n) => n.classList.toggle("active", n.dataset.nav === name));
@@ -207,7 +210,7 @@ LiftOS.UI = (() => {
   }
 
   function renderWeekStrip() {
-    const hist = S.getHistory();
+    const hist = historyForUi();
     const now = new Date();
     const day = now.getDay(); // 0 Sun
     const mondayOffset = day === 0 ? 6 : day - 1;
@@ -238,11 +241,11 @@ LiftOS.UI = (() => {
     const mondayOffset = day === 0 ? 6 : day - 1;
     const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - mondayOffset);
     const startIso = LiftOS.localDateKey(monday);
-    const hist = S.getHistory().filter((h) => h.date >= startIso);
+    const hist = historyForUi().filter((h) => h.date >= startIso);
     const prevMonday = new Date(monday.getTime() - 7 * 86400000);
     const prevStart = LiftOS.localDateKey(prevMonday);
     const prevEnd = startIso;
-    const prev = S.getHistory().filter((h) => h.date >= prevStart && h.date < prevEnd);
+    const prev = historyForUi().filter((h) => h.date >= prevStart && h.date < prevEnd);
 
     const vol = hist.reduce((a, h) => a + (h.volume || volumeOfHistory(h)), 0);
     const prevVol = prev.reduce((a, h) => a + (h.volume || volumeOfHistory(h)), 0);
@@ -264,6 +267,10 @@ LiftOS.UI = (() => {
       })
     );
     return v;
+  }
+
+  function historyForUi() {
+    return S.getHistoryForStats ? S.getHistoryForStats() : S.getHistory();
   }
 
   function renderHomeMuscles() {
@@ -808,8 +815,8 @@ LiftOS.UI = (() => {
                 <span class="prev-tag">上次</span> ${esc(prevTxt)}
                 · 最佳 ${esc(best ? (best.weight > 0 ? best.weight + "kg × " + best.reps : best.reps + " 次") : "无")}
               </div>
-              <div class="row mb-3" style="gap:8px">
-                <button class="btn btn-secondary btn-sm" onclick="App.copyPrevCompleted(${i})">复制上一组</button>
+              <div class="row mb-2" style="gap:8px">
+                <button class="btn btn-secondary btn-sm" onclick="App.copyPrevCompleted(${i})">仅复制上组</button>
                 <button class="btn btn-secondary btn-sm" onclick="App.copyPriorWorkout(${i})">复制上次训练</button>
               </div>
               ${typeRow}
@@ -835,7 +842,14 @@ LiftOS.UI = (() => {
               <button class="complete-set-btn" id="completeBtn" onclick="App.completeSet(${i})">
                 ✓ 完成本组
               </button>
-              <p class="complete-hint" id="completeHint">上次/建议只读，完成后才写入真实数据</p>
+              <button
+                class="repeat-complete-btn ${W.hasPreviousCompletedSet(state.session, i) ? "" : "is-off"}"
+                id="repeatCompleteBtn"
+                onclick="App.repeatAndComplete(${i})"
+              >
+                ⚡ 重复上一组并完成
+              </button>
+              <p class="complete-hint" id="completeHint">一键重复会写入上一组真实数据</p>
             </div>
           </div>`;
         }
@@ -910,6 +924,31 @@ LiftOS.UI = (() => {
       return;
     }
     renderSetList();
+  }
+
+  function repeatAndComplete(i) {
+    if (!state.session) return;
+    if (!W.hasPreviousCompletedSet(state.session, i)) {
+      showToast("先完成一组才能重复");
+      return;
+    }
+    const r = W.repeatAndCompleteSet(state.session, i);
+    if (!r.ok) {
+      showToast(r.error || "无法完成");
+      return;
+    }
+    const set = r.set;
+    if (r.prs?.length) {
+      const p = r.prs[0];
+      showToast(`${p.label} · ${p.detail}`, "pr");
+    } else {
+      showToast(`已重复完成 ${LiftOS.Gym.formatLoad(set)}`, "", {
+        label: "撤销",
+        onClick: () => requestUndo(i),
+      });
+    }
+    if (navigator.vibrate) navigator.vibrate(20);
+    renderTraining();
   }
 
   function completeSet(i) {
@@ -1060,22 +1099,57 @@ LiftOS.UI = (() => {
 
   let stopwatchTimer = null;
   let stopwatchStart = 0;
-  let stopwatchSetIdx = null;
+  let stopwatchBind = null; // { sessionId, exerciseId, exerciseUid, setId }
+
+  function stopwatchBindMatches() {
+    if (!stopwatchBind || !state.session) return false;
+    const ex = W.currentEx(state.session);
+    if (!ex) return false;
+    return (
+      stopwatchBind.sessionId === state.session.id &&
+      stopwatchBind.exerciseUid === ex.id &&
+      stopwatchBind.exerciseId === ex.exerciseId
+    );
+  }
+
+  function stopStopwatch(cancelOnly) {
+    if (!stopwatchTimer) return;
+    clearInterval(stopwatchTimer);
+    stopwatchTimer = null;
+    if (!cancelOnly && stopwatchStart && stopwatchBind && state.session) {
+      const elapsed = Math.round((Date.now() - stopwatchStart) / 1000);
+      // only write if still bound to same exercise object
+      if (stopwatchBindMatches() && elapsed > 0) {
+        const ex = W.currentEx(state.session);
+        const idx = ex.sets.findIndex((s) => s.id === stopwatchBind.setId);
+        if (idx >= 0) W.updateSetField(state.session, idx, "durationSec", elapsed);
+      }
+    }
+    stopwatchStart = 0;
+    stopwatchBind = null;
+  }
+
   function startStopwatch(i) {
     if (stopwatchTimer) {
-      clearInterval(stopwatchTimer);
-      stopwatchTimer = null;
-      const elapsed = Math.round((Date.now() - stopwatchStart) / 1000);
-      if (elapsed > 0) {
-        W.updateSetField(state.session, i, "durationSec", elapsed);
-        showToast(`秒表已写入 ${elapsed}s`);
-      }
+      stopStopwatch(false);
+      showToast("秒表已停止");
       renderSetList();
       return;
     }
-    stopwatchSetIdx = i;
+    const ex = W.currentEx(state.session);
+    if (!ex || !ex.sets[i]) return;
+    stopwatchBind = {
+      sessionId: state.session.id,
+      exerciseId: ex.exerciseId,
+      exerciseUid: ex.id,
+      setId: ex.sets[i].id,
+    };
     stopwatchStart = Date.now();
     stopwatchTimer = setInterval(() => {
+      if (!stopwatchBindMatches()) {
+        stopStopwatch(true);
+        return;
+      }
       const s = Math.round((Date.now() - stopwatchStart) / 1000);
       const el = $("#dDisplay");
       if (el) el.textContent = s;
@@ -1127,6 +1201,7 @@ LiftOS.UI = (() => {
   }
 
   function doDeleteCompletedSet(i) {
+    stopStopwatch(true);
     W.deleteCompletedSet(state.session, i);
     closeOverlay();
     renderTraining();
@@ -1585,7 +1660,7 @@ LiftOS.UI = (() => {
     openOverlay(`
       <div class="modal" onclick="event.stopPropagation()">
         <h3>撤销完成？</h3>
-        <p>${set.weight}kg × ${set.reps}${set.rir != null ? ` · RIR ${set.rir}` : ""}</p>
+        <p>${esc(LiftOS.Gym.formatLoad(set))}${set.rir != null ? ` · RIR ${set.rir}` : set.durationSec != null && set.reps == null ? "" : " · RIR 未记录"}</p>
         <div class="modal-actions">
           <button class="btn btn-primary" onclick="App.doUndo(${i})">撤销</button>
           <button class="btn btn-ghost" onclick="App.closeOverlay()">取消</button>
@@ -1603,6 +1678,7 @@ LiftOS.UI = (() => {
   }
 
   function nextExercise() {
+    stopStopwatch(true);
     const ok = W.nextExercise(state.session);
     if (!ok) {
       endWorkout();
@@ -1612,6 +1688,7 @@ LiftOS.UI = (() => {
   }
 
   function skipExercise() {
+    stopStopwatch(true);
     W.skipExercise(state.session);
     renderTraining();
   }
@@ -1674,6 +1751,7 @@ LiftOS.UI = (() => {
 
   function applyReplace(mode) {
     if (!state.pendingReplace) return;
+    stopStopwatch(true);
     W.replaceExercise(state.session, state.pendingReplace.newId, mode);
     state.pendingReplace = null;
     closeOverlay();
@@ -1745,6 +1823,7 @@ LiftOS.UI = (() => {
   }
 
   function abandonWorkout() {
+    stopStopwatch(true);
     applyWakeLock(false);
     W.abandon();
     state.session = null;
@@ -1755,6 +1834,7 @@ LiftOS.UI = (() => {
 
   function endWorkout() {
     closeOverlay();
+    stopStopwatch(true);
     applyWakeLock(false);
     const session = state.session || S.getSession();
     if (!session) {
@@ -1814,6 +1894,7 @@ LiftOS.UI = (() => {
   }
 
   function finishSummary() {
+    stopStopwatch(true);
     applyWakeLock(false);
     const session = state.session || S.getSession();
     if (!session) {
@@ -2007,7 +2088,7 @@ LiftOS.UI = (() => {
                     .map(
                       (r) => `<div class="history-session">
                         <div class="date">${esc(r.date)} · ${esc(r.planName || "")}</div>
-                        ${r.sets.map((s) => `<div class="set-line">${s.weight}kg × ${s.reps}${s.rir != null ? ` · RIR ${s.rir}` : ""}</div>`).join("")}
+                        ${r.sets.map((s) => `<div class="set-line">${esc(LiftOS.Gym.formatLoad(s))}${s.rir != null ? ` · RIR ${s.rir}` : ""}</div>`).join("")}
                       </div>`
                     )
                     .join("")
@@ -2023,7 +2104,7 @@ LiftOS.UI = (() => {
   function renderData() {
     renderWeeklyReview();
     const range = state.dataRange;
-    const allHistory = S.getHistory();
+    const allHistory = historyForUi();
     const emptyBox = $("#dataEmpty");
     const dataMain = $("#dataMain");
     if (!allHistory.length) {
@@ -2118,7 +2199,7 @@ LiftOS.UI = (() => {
       .join("");
 
     // recent history with correction entry
-    const hist = S.getHistory().slice(0, 8);
+    const hist = historyForUi().slice(0, 8);
     const histEl = $("#dataHistoryList");
     if (histEl) {
       histEl.innerHTML = hist
@@ -2160,7 +2241,7 @@ LiftOS.UI = (() => {
   function renderProfile() {
     const prefs = S.getPrefs();
     $("#profileName").textContent = prefs.name || "训练者";
-    $("#profileGoal").textContent = `${prefs.goal || "综合"} · ${prefs.bodyWeight || "—"}kg`;
+    $("#profileGoal").textContent = `${prefs.goal || "力量训练"}${prefs.bodyWeight ? " · " + prefs.bodyWeight + "kg" : ""}`;
   }
 
   /* ---------- PLAN helpers used from HTML ---------- */
@@ -2291,7 +2372,21 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     setTheme(prefs.theme || "dark");
     state.session = S.getSession();
     const about = $("#aboutVersion");
-    if (about) about.textContent = `v${LiftOS.APP_VERSION || "0.3.0"}`;
+    if (about) about.textContent = `v${LiftOS.APP_VERSION || "0.3.1"}`;
+    try {
+      const corrupt = S.detectCorruption ? S.detectCorruption() : [];
+      if (corrupt.length) {
+        const preserved = S.preserveAllCorruptKeys ? S.preserveAllCorruptKeys() : [];
+        const allPreserved = corrupt.every((k) => S.hasCorruptPreserved?.(k));
+        setTimeout(() => {
+          if (allPreserved) {
+            showToast("部分本地数据损坏，已保存原始恢复副本", "");
+          } else {
+            showToast("部分本地数据损坏且无法自动备份，请谨慎操作", "");
+          }
+        }, 400);
+      }
+    } catch (_) {}
     const ka = $("#keepAwakeLabel");
     if (ka) ka.textContent = prefs.keepAwake === false ? "关" : "开";
 
@@ -2357,9 +2452,13 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
         .catch(() => {});
       let refreshing = false;
       navigator.serviceWorker.addEventListener("controllerchange", () => {
+        // Never auto-reload during an active workout
+        if (S.getSession()) {
+          showToast("新版本已就绪，训练结束后可更新");
+          return;
+        }
         if (refreshing) return;
         refreshing = true;
-        // session already saved on every mutation
         location.reload();
       });
     }
@@ -2444,8 +2543,12 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
 
   /* ---------- EXPORT / IMPORT ---------- */
   function exportData() {
-    const payload = S.downloadExport();
-    showToast(`已导出 ${payload.history.length} 条历史`);
+    try {
+      const payload = S.downloadExport();
+      showToast(`已导出 ${payload.history.length} 条历史`);
+    } catch (err) {
+      showToast(err?.message || "导出失败");
+    }
   }
 
   function openImportPicker() {
@@ -2543,6 +2646,7 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     openExerciseDetail,
     openExerciseStats,
     setRange,
+    repeatAndComplete,
     completeSet,
     requestUndo,
     doUndo,
@@ -2596,7 +2700,9 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     stepDuration,
     openDurationInput,
     saveModalDuration,
+    stopStopwatch,
     startStopwatch,
+    stopwatchIsRunning: () => !!stopwatchTimer,
     openWarmupCalc,
     applyWarmupCalc,
     openPlateCalc,

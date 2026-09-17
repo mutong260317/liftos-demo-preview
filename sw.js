@@ -1,5 +1,5 @@
 /* LiftOS Service Worker — versioned cache, skip-waiting updates */
-const CACHE = "liftos-v0.3.0";
+const CACHE = "liftos-v0.3.1";
 const ASSETS = [
   "./",
   "./index.html",
@@ -31,7 +31,17 @@ self.addEventListener("message", (event) => {
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(ASSETS).catch(() => cache.addAll(["./index.html", "./version.json"])))
+    caches.open(CACHE).then(async (cache) => {
+      // Optional assets: independent failures allowed
+      await Promise.all(
+        ASSETS.filter((u) => u !== "./" && u !== "./index.html" && u !== "./version.json").map((url) =>
+          cache.add(url).catch(() => {})
+        )
+      );
+      // Core shell MUST succeed or install fails
+      await cache.add("./index.html");
+      await cache.add("./version.json");
+    })
   );
 });
 

@@ -2,7 +2,7 @@
 
 window.LiftOS = window.LiftOS || {};
 
-LiftOS.APP_VERSION = "0.3.0";
+LiftOS.APP_VERSION = "0.3.1";
 LiftOS.CURRENT_SCHEMA_VERSION = 5;
 
 LiftOS.Migrations = (() => {
@@ -107,6 +107,18 @@ LiftOS.Migrations = (() => {
    */
   function run() {
     try {
+      // Never silently advance past corrupt business keys
+      const corrupt = (LiftOS.Storage.detectCorruption && LiftOS.Storage.detectCorruption()) || [];
+      if (corrupt.length) {
+        return {
+          from: getVersion(),
+          to: getVersion(),
+          changed: false,
+          error: "corrupt_localStorage",
+          corrupt,
+        };
+      }
+
       let v = getVersion();
       if (v >= LiftOS.CURRENT_SCHEMA_VERSION) return { from: v, to: v, changed: false };
 

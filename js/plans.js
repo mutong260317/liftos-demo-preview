@@ -105,11 +105,31 @@ LiftOS.Plans = (() => {
     return update(planId, { exercises: list });
   }
 
+  function normalizePlanSupersets(plan) {
+    if (!plan?.exercises?.length) return plan;
+    const counts = {};
+    plan.exercises.forEach((e) => {
+      if (e.supersetGroup) counts[e.supersetGroup] = (counts[e.supersetGroup] || 0) + 1;
+    });
+    plan.exercises.forEach((e) => {
+      if (e.supersetGroup && (counts[e.supersetGroup] || 0) < 2) delete e.supersetGroup;
+    });
+    return plan;
+  }
+
   function removeExercise(planId, index) {
     const plan = get(planId);
     if (!plan) return null;
-    const list = plan.exercises.filter((_, i) => i !== index);
-    return update(planId, { exercises: list });
+    const list = plan.exercises.filter((_, i) => i !== index).map((e) => ({ ...e }));
+    const updated = update(planId, { exercises: list });
+    if (updated) normalizePlanSupersets(updated);
+    // persist normalization
+    const fresh = get(planId);
+    if (fresh) {
+      normalizePlanSupersets(fresh);
+      update(planId, { exercises: fresh.exercises });
+    }
+    return get(planId);
   }
 
   /** Estimated duration from rest + set count heuristic. */
@@ -168,5 +188,5 @@ LiftOS.Plans = (() => {
     return true;
   }
 
-  return { all, get, create, update, remove, addExercise, removeExercise, resolvePlanExerciseParams, planStats, estimateMinutes, muscleLabelFromPlan, linkPlanSuperset, unlinkPlanSuperset };
+  return { all, get, create, update, remove, addExercise, removeExercise, resolvePlanExerciseParams, planStats, estimateMinutes, muscleLabelFromPlan, linkPlanSuperset, unlinkPlanSuperset, normalizePlanSupersets };
 })();
