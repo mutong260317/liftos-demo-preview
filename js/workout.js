@@ -666,6 +666,57 @@ LiftOS.Workout = (() => {
     return { ok: true, copied: cur };
   }
 
+  /** Prefer previous completed set of the same semantic type (work vs warmup). */
+  function findPrevCompletedForRepeat(session, setIdx) {
+    const ex = currentEx(session);
+    if (!ex) return null;
+    const cur = ex.sets[setIdx];
+    const sameType = ex.sets
+      .slice(0, setIdx)
+      .reverse()
+      .find((s) => s.completed && s.type === (cur?.type || "work"));
+    if (sameType) return sameType;
+    if (cur && cur.type !== "warmup") {
+      return ex.sets.slice(0, setIdx).reverse().find((s) => s.completed && S().isWork(s)) || null;
+    }
+    return null;
+  }
+
+  /**
+   * Gym one-tap: copy previous completed set values AND complete current set.
+   * This is an explicit user action writing real data (not a silent suggestion fill).
+   */
+  function repeatAndCompleteSet(session, setIdx) {
+    const ex = currentEx(session);
+    if (!ex || !ex.sets[setIdx]) return { ok: false, error: "no set" };
+    const prev = findPrevCompletedForRepeat(session, setIdx);
+    if (!prev) return { ok: false, error: "先完成一组才能重复" };
+    const cur = ex.sets[setIdx];
+    cur.weight = prev.weight;
+    cur.reps = prev.reps;
+    cur.rir = prev.rir;
+    cur.durationSec = prev.durationSec;
+    cur.loadMode = prev.loadMode;
+    cur.assistanceKg = prev.assistanceKg;
+    cur.addedWeightKg = prev.addedWeightKg;
+    save(session);
+    const payload = {
+      weight: cur.weight,
+      reps: cur.reps,
+      rir: cur.rir,
+      durationSec: cur.durationSec,
+      type: cur.type,
+      loadMode: cur.loadMode,
+      assistanceKg: cur.assistanceKg,
+      addedWeightKg: cur.addedWeightKg,
+    };
+    return completeSet(session, setIdx, payload);
+  }
+
+  function hasPreviousCompletedSet(session, setIdx) {
+    return !!findPrevCompletedForRepeat(session, setIdx);
+  }
+
   /** Copy matching prior-workout set (same exercise work index). */
   function copyPriorWorkoutSet(session, setIdx, preference = "same_routine") {
     const ex = currentEx(session);
@@ -819,6 +870,8 @@ LiftOS.Workout = (() => {
     deleteCompletedSet,
     recalculateSessionPRs,
     copyPreviousCompletedSet,
+    repeatAndCompleteSet,
+    hasPreviousCompletedSet,
     copyPriorWorkoutSet,
     setSetType,
     updateHistoryEntry,

@@ -216,6 +216,60 @@ function findBrowser() {
     // node --check done outside
     results.push(log("README/AGENTS exist", fs.existsSync(path.join(ROOT, "README.md")) && fs.existsSync(path.join(ROOT, "AGENTS.md"))));
 
+    // One-tap repeat complete
+    const oneTap = await page.evaluate(() => {
+      localStorage.clear();
+      LiftOS.Storage.ensureDefaults();
+      const plan = LiftOS.Plans.get("pushA");
+      const s = LiftOS.Workout.createFromPlan(plan);
+      // skip warmup
+      let idx = LiftOS.Workout.activeSetIndex(s);
+      const ex = LiftOS.Workout.currentEx(s);
+      while (idx >= 0 && ex.sets[idx].type === "warmup") {
+        LiftOS.Workout.completeSet(s, idx, { weight: 10, reps: 12, rir: null });
+        LiftOS.Workout.clearRest(s);
+        idx = LiftOS.Workout.activeSetIndex(s);
+      }
+      const before = LiftOS.Workout.activeSetIndex(s);
+      LiftOS.Workout.completeSet(s, before, { weight: 22, reps: 10, rir: 1 });
+      LiftOS.Workout.clearRest(s);
+      const next = LiftOS.Workout.activeSetIndex(s);
+      const hasPrev = LiftOS.Workout.hasPreviousCompletedSet(s, next);
+      const r = LiftOS.Workout.repeatAndCompleteSet(s, next);
+      LiftOS.Workout.clearRest(s);
+      const set = LiftOS.Workout.currentEx(s).sets[next];
+      return {
+        hasPrev,
+        ok: r.ok,
+        weight: set.weight,
+        reps: set.reps,
+        rir: set.rir,
+        completed: set.completed,
+        doneCount: LiftOS.Workout.currentEx(s).sets.filter((x) => x.completed && LiftOS.Stats.isWork(x)).length,
+      };
+    });
+    results.push(
+      log(
+        "one-tap repeat complete writes real data",
+        oneTap.hasPrev && oneTap.ok && oneTap.completed && oneTap.weight === 22 && oneTap.reps === 10 && oneTap.rir === 1 && oneTap.doneCount >= 2,
+        JSON.stringify(oneTap)
+      )
+    );
+
+    // first set cannot one-tap
+    const noPrev = await page.evaluate(() => {
+      const plan = LiftOS.Plans.get("pushA");
+      const s = LiftOS.Workout.createFromPlan(plan);
+      let idx = LiftOS.Workout.activeSetIndex(s);
+      const ex = LiftOS.Workout.currentEx(s);
+      while (idx >= 0 && ex.sets[idx].type === "warmup") {
+        LiftOS.Workout.completeSet(s, idx, { weight: 10, reps: 12, rir: null });
+        idx = LiftOS.Workout.activeSetIndex(s);
+      }
+      return LiftOS.Workout.hasPreviousCompletedSet(s, idx);
+    });
+    results.push(log("first work set no one-tap", noPrev === false, String(noPrev)));
+
     /* ===== Review Round 1 ===== */
 
     // P0-1 corrupt history: preserve raw, no silent empty overwrite

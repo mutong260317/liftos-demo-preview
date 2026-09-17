@@ -815,8 +815,8 @@ LiftOS.UI = (() => {
                 <span class="prev-tag">上次</span> ${esc(prevTxt)}
                 · 最佳 ${esc(best ? (best.weight > 0 ? best.weight + "kg × " + best.reps : best.reps + " 次") : "无")}
               </div>
-              <div class="row mb-3" style="gap:8px">
-                <button class="btn btn-secondary btn-sm" onclick="App.copyPrevCompleted(${i})">复制上一组</button>
+              <div class="row mb-2" style="gap:8px">
+                <button class="btn btn-secondary btn-sm" onclick="App.copyPrevCompleted(${i})">仅复制上组</button>
                 <button class="btn btn-secondary btn-sm" onclick="App.copyPriorWorkout(${i})">复制上次训练</button>
               </div>
               ${typeRow}
@@ -842,7 +842,14 @@ LiftOS.UI = (() => {
               <button class="complete-set-btn" id="completeBtn" onclick="App.completeSet(${i})">
                 ✓ 完成本组
               </button>
-              <p class="complete-hint" id="completeHint">上次/建议只读，完成后才写入真实数据</p>
+              <button
+                class="repeat-complete-btn ${W.hasPreviousCompletedSet(state.session, i) ? "" : "is-off"}"
+                id="repeatCompleteBtn"
+                onclick="App.repeatAndComplete(${i})"
+              >
+                ⚡ 重复上一组并完成
+              </button>
+              <p class="complete-hint" id="completeHint">一键重复会写入上一组真实数据</p>
             </div>
           </div>`;
         }
@@ -917,6 +924,31 @@ LiftOS.UI = (() => {
       return;
     }
     renderSetList();
+  }
+
+  function repeatAndComplete(i) {
+    if (!state.session) return;
+    if (!W.hasPreviousCompletedSet(state.session, i)) {
+      showToast("先完成一组才能重复");
+      return;
+    }
+    const r = W.repeatAndCompleteSet(state.session, i);
+    if (!r.ok) {
+      showToast(r.error || "无法完成");
+      return;
+    }
+    const set = r.set;
+    if (r.prs?.length) {
+      const p = r.prs[0];
+      showToast(`${p.label} · ${p.detail}`, "pr");
+    } else {
+      showToast(`已重复完成 ${LiftOS.Gym.formatLoad(set)}`, "", {
+        label: "撤销",
+        onClick: () => requestUndo(i),
+      });
+    }
+    if (navigator.vibrate) navigator.vibrate(20);
+    renderTraining();
   }
 
   function completeSet(i) {
@@ -2614,6 +2646,7 @@ ${esc(ex?.advice?.reason || "Double Progression：达到次数上限加重，低
     openExerciseDetail,
     openExerciseStats,
     setRange,
+    repeatAndComplete,
     completeSet,
     requestUndo,
     doUndo,

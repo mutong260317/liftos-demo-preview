@@ -191,6 +191,23 @@
   display: flex; align-items: center; justify-content: center; gap: 8px;
 }
 .complete-set-btn:active { transform: scale(0.97); background: #2aab6a; }
+.repeat-complete-btn {
+  margin-top: 10px;
+  height: 52px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid rgba(76, 141, 255, 0.35);
+  font-size: 15px;
+  font-weight: 700;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.repeat-complete-btn:active { transform: scale(0.97); opacity: 0.9; }
+.repeat-complete-btn.is-off { opacity: 0.45; pointer-events: none; }
 .complete-hint {
   margin-top: 8px;
   font-size: var(--fs-caption);
